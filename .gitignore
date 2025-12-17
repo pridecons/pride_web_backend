@@ -1,0 +1,61 @@
+# ---- Python and General ----
+*.py[cod]  
+*.so
+*.egg
+*.egg-info
+*.swp
+.DS_Store
+*.sqlite3
+__pycache__/
+.pytest_cache/
+*.log
+
+# ---- Virtual Environments ----
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+
+# ---- FastAPI/Deployment ----
+# If you store Uvicorn/Gunicorn logs locally, ignore them:
+logs/
+*.log
+
+# store image
+static/
+static
+# store Cache
+Cache/
+Cache
+# ---- Configuration/Secrets ----
+.env
+.env.*
+.venv
+*.secret
+*.key
+
+# ---- Build/Distribution ----
+build/
+dist/
+wheelhouse/
+*.egg-info/
+.eggs/
+
+# ---- Testing ----
+.coverage
+coverage.xml
+htmlcov/
+testing/
+
+# ---- Editor/IDE Files ----
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# ---- Others (Optional) ----
+# You can exclude the following if you store them in your repo:
+# poetry.lock
+# Pipfile.lock
+# requirements.txt
