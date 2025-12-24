@@ -46,7 +46,7 @@ wheelhouse/
 .coverage
 coverage.xml
 htmlcov/
-testing/
+# testing/
 
 # ---- Editor/IDE Files ----
 .vscode/

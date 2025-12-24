@@ -12,3 +12,4 @@ fastapi-cache2
 psycopg2-binary==2.9.10
 pandas
 boto3
+pydantic>=2.7,<3.0

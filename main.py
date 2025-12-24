@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from routes.NSE import Top_Marqee, Todays_Stock, Market_And_Sectors, Preopen_Movers, Most_Traded
 from routes.Cloude_Data import corporateAction, faoOiParticipant, fiidiiTrade, resultCalendar, ipo
 from routes.Cloude_Data.News import news
+from routes.Payment import plan, Payment
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -79,9 +80,9 @@ async def lifespan(app: FastAPI):
         logger.info("✅ DB tables created/verified")
 
         # Scheduler job setup
-        # scheduler.add_job(_cm30_job, "interval", minutes=1)
-        # scheduler.add_job(_bhavcopy_job, "cron", hour=18, minute=45)  
-        # scheduler.start()
+        scheduler.add_job(_cm30_job, "interval", minutes=1)
+        scheduler.add_job(_bhavcopy_job, "cron", hour=18, minute=45)  
+        scheduler.start()
         logger.info("✅ CM30 scheduler started (every 1 minute)")
 
         logger.info("🎉 Startup complete.")
@@ -138,6 +139,8 @@ def health_check():
 
 # Register all your existing routes
 try:   
+    app.include_router(Payment.router, prefix="/api/v1")
+    app.include_router(plan.router, prefix="/api/v1")
     app.include_router(news.router, prefix="/api/v1")
     app.include_router(ipo.router, prefix="/api/v1")
     app.include_router(resultCalendar.router, prefix="/api/v1")
