@@ -354,3 +354,22 @@ class NseIndexConstituent(Base):
 
     def __repr__(self):
         return f"<NseIndexConstituent index_id={self.index_id} symbol={self.symbol} as_of={self.as_of_date}>"
+
+# db/models.py (add this model)
+
+class NseIngestionLog(Base):
+    __tablename__ = "nse_ingestion_log"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    trade_date = Column(Date, nullable=False, index=True)
+    segment = Column(String(16), nullable=False, index=True)   # "CM30_MKT" / "CM30_IND"
+    seq = Column(Integer, nullable=False, index=True)          # 37, 38, 39...
+    remote_path = Column(String(512), nullable=False)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("trade_date", "segment", "seq", name="uq_ingestion_log_trade_segment_seq"),
+    )
+

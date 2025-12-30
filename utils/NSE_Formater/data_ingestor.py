@@ -1,11 +1,14 @@
 # utils/NSE_Formater/data_ingestor.py
 
 import os
+import csv
+import io
+import gzip
 import tempfile
 from datetime import datetime, date
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from zoneinfo import ZoneInfo  # Python 3.9+
-
+from db.models import NseIngestionLog
 from sqlalchemy.orm import Session
 
 from db.connection import SessionLocal
@@ -25,6 +28,10 @@ IST = ZoneInfo("Asia/Kolkata")
 PRICE_SCALE = 100.0
 
 
+# ======================================================================
+#  Generic helpers
+# ======================================================================
+
 def _safe_price(v: int | float | None) -> float | None:
     """
     CM equity / index values usually in paise. Divide by 100.
@@ -35,6 +42,32 @@ def _safe_price(v: int | float | None) -> float | None:
         return float(v) / PRICE_SCALE
     except (TypeError, ValueError):
         return None
+
+
+def _safe_div(v: int | float | None, div: float) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(v) / div
+    except (TypeError, ValueError):
+        return None
+
+
+def _epoch_to_date(v: int | float | None) -> date | None:
+    """
+    NSE epoch seconds -> UTC date
+    0 / None -> None
+    """
+    if v is None:
+        return None
+    try:
+        iv = int(float(v))
+    except (TypeError, ValueError):
+        return None
+    if iv <= 0:
+        return None
+    return datetime.utcfromtimestamp(iv).date()
+
 
 def _safe_pct(v: int | float | None) -> float | None:
     """
@@ -55,23 +88,20 @@ def _safe_pct(v: int | float | None) -> float | None:
     except (TypeError, ValueError):
         return None
 
-    # Kabhi-kabhi 32-bit overflow pattern wale values (4,294,967,2x) aate hain,
-    # unko direct drop kar do.
-    if abs(raw) > 1_000_000_00:  # > 1e8 = clearly garbage
+    # 32-bit overflow pattern / garbage
+    if abs(raw) > 1_000_000_00:  # > 1e8
         return None
 
     val = raw / 100.0  # convert to actual percent
 
-    # Ab agar result bhi extremely large hai (e.g. > 10000%),
-    # ya DB range ke bahar ho sakta hai, to bhi drop.
-    if abs(val) >= 10_000:  # 10000% se upar = unrealistic, ignore
+    if abs(val) >= 10_000:
         return None
 
-    # numeric(10,4) ke liye max abs < 1e6 hona chahiye
     if abs(val) >= 1_000_000:
         return None
 
     return val
+
 
 def _nse_folder_name(trade_date: date) -> str:
     """date -> 'November242025'"""
@@ -89,13 +119,21 @@ def _parse_folder_date_from_path(remote_dir: str) -> date | None:
         return None
 
 
+def _maybe_gunzip(content: bytes, file_name: str) -> bytes:
+    """
+    If file is gzipped (endswith .gz), decompress.
+    """
+    if file_name.lower().endswith(".gz"):
+        try:
+            return gzip.decompress(content)
+        except Exception:
+            return content
+    return content
+
+
 # ======================================================================
 #  CM BHAVCOPY CSV (Equities)  -> NseCmBhavcopy
 # ======================================================================
-
-import csv
-import io
-
 
 def parse_cm_bhavcopy_csv(content: bytes, trade_date: date) -> List[Dict[str, Any]]:
     """
@@ -158,7 +196,6 @@ def process_cm_bhavcopy_for_date(trade_date: date) -> None:
     Given a date, /CM/BHAV/ se bhavcopy CSV laata hai, parse karta hai,
     aur nse_cm_bhavcopy me upsert karta hai.
     """
-
     mon = trade_date.strftime("%b").upper()      # NOV
     dd = trade_date.strftime("%d")               # 24
     yyyy = trade_date.strftime("%Y")             # 2025
@@ -173,23 +210,20 @@ def process_cm_bhavcopy_for_date(trade_date: date) -> None:
     try:
         print(f"[CM-BHAV] Processing bhavcopy for {trade_date} -> {remote_path}")
 
-        # 1) Download file
         try:
             file_bytes = sftp.download_file(remote_path)
         except Exception as e:
             print(f"[CM-BHAV] ERROR downloading {remote_path}: {e}")
             return
 
-        # If compressed (.gz), you can add gzip.decompress here.
+        file_bytes = _maybe_gunzip(file_bytes, file_name)
 
-        # 2) Parse CSV
         records = parse_cm_bhavcopy_csv(file_bytes, trade_date)
         print(f"[CM-BHAV] Parsed {len(records)} bhavcopy records")
-
         if not records:
             return
 
-        # 3) Preload security mapping for fast token lookup
+        # preload mapping
         securities = db.query(NseCmSecurity).all()
 
         by_isin_series: dict[tuple[str, str], NseCmSecurity] = {}
@@ -283,27 +317,14 @@ def process_cm_bhavcopy_for_date(trade_date: date) -> None:
 # ======================================================================
 
 def process_cm30_mkt_folder(remote_dir: str) -> None:
-    """
-    Given /CM30/DATA/November242025 jaise folder,
-    uske saare .mkt.gz files:
-      - SFTP se download
-      - parse_mkt se parse
-      - nse_cm_intraday_1min me save
-      - agar koi naya token_id mila jo nse_cm_securities me nahi hai,
-        to uska ek stub security row create karo (FK satisfy karne ke liye).
-    """
     sftp = SFTPClient()
     db: Session = SessionLocal()
 
     try:
-        trade_date = _parse_folder_date_from_path(remote_dir)
-        if not trade_date:
-            trade_date = datetime.now(IST).date()
-
+        trade_date = _parse_folder_date_from_path(remote_dir) or datetime.now(IST).date()
         print(f"[CM30-MKT] Processing folder: {remote_dir} (trade_date={trade_date})")
 
         sftp_paths = sftp.list_files(remote_dir)
-
         mkt_paths = sorted(
             [p for p in sftp_paths if p.lower().endswith(".mkt.gz")],
             key=lambda x: int(os.path.basename(x).split(".")[0]),
@@ -313,20 +334,38 @@ def process_cm30_mkt_folder(remote_dir: str) -> None:
             print(f"[CM30-MKT] No .mkt.gz files in {remote_dir}")
             return
 
-        # 1) Existing token_ids
+        # ✅ Already processed seq list (one query)
+        done_seqs = {
+            r[0]
+            for r in db.query(NseIngestionLog.seq)
+            .filter(
+                NseIngestionLog.trade_date == trade_date,
+                NseIngestionLog.segment == "CM30_MKT",
+            )
+            .all()
+        }
+
+        # ✅ Existing token_ids cache
         existing_token_ids = {t[0] for t in db.query(NseCmSecurity.token_id).all()}
-        print(f"[CM30-MKT] Existing securities loaded: {len(existing_token_ids)}")
+
+        skipped = 0
+        processed = 0
 
         for remote_path in mkt_paths:
-            file_name = os.path.basename(remote_path)  # e.g. '123.mkt.gz'
+            file_name = os.path.basename(remote_path)  # "37.mkt.gz"
             seq_str = file_name.split(".")[0]
+
             try:
-                sequence_no = int(seq_str)
+                seq = int(seq_str)
             except ValueError:
-                sequence_no = None
+                continue
 
-            print(f"[CM30-MKT] Downloading {remote_path} (seq={sequence_no})")
+            # ✅ SKIP if already processed
+            if seq in done_seqs:
+                skipped += 1
+                continue
 
+            print(f"[CM30-MKT] Downloading {remote_path} (seq={seq})")
             gz_bytes = sftp.download_file(remote_path)
 
             fd, tmp_path = tempfile.mkstemp(suffix=".mkt.gz")
@@ -344,81 +383,82 @@ def process_cm30_mkt_folder(remote_dir: str) -> None:
 
             print(f"[CM30-MKT] Parsed {len(records)} records from {file_name}")
 
-            # 2) Ensure security master row exists per token
+            # Ensure security master exists (stubs)
+            new_secs = []
             for r in records:
                 token_id = int(r["security_token"])
-
                 if token_id not in existing_token_ids:
-                    sec = NseCmSecurity(
-                        token_id=token_id,
-                        symbol=f"TOKEN_{token_id}",
-                        series=None,
-                        isin=None,
-                        company_name=None,
-                        lot_size=None,
-                        face_value=None,
-                        segment="CM",
-                        active_flag=True,
+                    new_secs.append(
+                        NseCmSecurity(
+                            token_id=token_id,
+                            symbol=str(token_id),
+                            series=None,
+                            isin=None,
+                            company_name=None,
+                            lot_size=None,
+                            face_value=None,
+                            segment="CM",
+                            active_flag=True,
+                        )
                     )
-                    db.add(sec)
                     existing_token_ids.add(token_id)
 
-            # 3) Insert intraday bars
+            if new_secs:
+                db.bulk_save_objects(new_secs)
+
+            # Insert intraday bars (no duplicate protection here; file-level log prevents duplicates)
+            bars = []
             for r in records:
                 ts_utc = datetime.fromtimestamp(r["timestamp"])
                 ts_ist = ts_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(IST)
 
                 total_traded_qty = int(r.get("total_traded_quantity") or 0)
-                interval_traded_qty = int(
-                    r.get("interval_total_traded_quantity") or 0
+                interval_traded_qty = int(r.get("interval_total_traded_quantity") or 0)
+
+                bars.append(
+                    NseCmIntraday1Min(
+                        trade_date=trade_date,
+                        interval_start=ts_ist,
+                        token_id=int(r["security_token"]),
+                        last_price=_safe_price(r["last_traded_price"]),
+                        best_bid_price=_safe_price(r["best_buy_price"]),
+                        best_bid_qty=int(r["best_buy_quantity"] or 0),
+                        best_ask_price=_safe_price(r["best_sell_price"]),
+                        best_ask_qty=int(r["best_sell_quantity"] or 0),
+                        volume=interval_traded_qty or total_traded_qty or None,
+                        avg_price=_safe_price(r["average_traded_price"]),
+                        open_price=_safe_price(r.get("interval_open_price") or r.get("open_price")),
+                        high_price=_safe_price(r.get("interval_high_price") or r.get("high_price")),
+                        low_price=_safe_price(r.get("interval_low_price") or r.get("low_price")),
+                        close_price=_safe_price(r.get("interval_close_price") or r.get("close_price")),
+                        total_traded_qty=total_traded_qty or None,
+                        interval_traded_qty=interval_traded_qty or None,
+                        indicative_close_price=_safe_price(r.get("indicative_close_price")),
+                        value=None,
+                        total_trades=None,
+                        open_interest=None,
+                    )
                 )
 
-                bar = NseCmIntraday1Min(
+            if bars:
+                db.bulk_save_objects(bars)
+
+            # ✅ Mark this file seq as processed (UNIQUE prevents double insert)
+            db.add(
+                NseIngestionLog(
                     trade_date=trade_date,
-                    interval_start=ts_ist,
-                    token_id=int(r["security_token"]),
-
-                    # prices
-                    last_price=_safe_price(r["last_traded_price"]),
-                    best_bid_price=_safe_price(r["best_buy_price"]),
-                    best_bid_qty=int(r["best_buy_quantity"] or 0),
-                    best_ask_price=_safe_price(r["best_sell_price"]),
-                    best_ask_qty=int(r["best_sell_quantity"] or 0),
-
-                    # Volume: prefer interval quantity if present
-                    volume=interval_traded_qty or total_traded_qty or None,
-                    avg_price=_safe_price(r["average_traded_price"]),
-                    open_price=_safe_price(
-                        r.get("interval_open_price") or r.get("open_price")
-                    ),
-                    high_price=_safe_price(
-                        r.get("interval_high_price") or r.get("high_price")
-                    ),
-                    low_price=_safe_price(
-                        r.get("interval_low_price") or r.get("low_price")
-                    ),
-                    close_price=_safe_price(
-                        r.get("interval_close_price") or r.get("close_price")
-                    ),
-
-                    # Extra fields
-                    total_traded_qty=total_traded_qty or None,
-                    interval_traded_qty=interval_traded_qty or None,
-                    indicative_close_price=_safe_price(
-                        r.get("indicative_close_price")
-                    ),
-
-                    # Not provided explicitly in this feed
-                    value=None,
-                    total_trades=None,
-                    open_interest=None,
+                    segment="CM30_MKT",
+                    seq=seq,
+                    remote_path=remote_path,
                 )
-                db.add(bar)
+            )
 
             db.commit()
-            print(f"[CM30-MKT] Committed data for {file_name}")
+            done_seqs.add(seq)
+            processed += 1
+            print(f"[CM30-MKT] ✅ Committed data for {file_name}")
 
-        print(f"[CM30-MKT] Done folder {remote_dir}")
+        print(f"[CM30-MKT] Done folder {remote_dir} | processed={processed}, skipped={skipped}")
 
     except Exception as e:
         db.rollback()
@@ -428,27 +468,23 @@ def process_cm30_mkt_folder(remote_dir: str) -> None:
         db.close()
         sftp.close()
 
-
 # ======================================================================
 #  CM30 DATA: .ind.gz  -> NseCmIndex1Min
 # ======================================================================
 
 def process_cm30_ind_folder(remote_dir: str) -> None:
     """
-    Given /CM30/DATA/November242025 jaise folder,
-    uske saare .ind.gz files:
-      - SFTP se download
-      - parse_ind se parse
-      - nse_cm_indices_1min me save
+    /CM30/DATA/<MonthDDYYYY> folder:
+      - download all .ind.gz
+      - parse_ind
+      - store into nse_cm_indices_1min
+      - ✅ skip already processed seq using NseIngestionLog
     """
     sftp = SFTPClient()
     db: Session = SessionLocal()
 
     try:
-        trade_date = _parse_folder_date_from_path(remote_dir)
-        if not trade_date:
-            trade_date = datetime.now(IST).date()
-
+        trade_date = _parse_folder_date_from_path(remote_dir) or datetime.now(IST).date()
         print(f"[CM30-IND] Processing folder: {remote_dir} (trade_date={trade_date})")
 
         sftp_paths = sftp.list_files(remote_dir)
@@ -462,15 +498,35 @@ def process_cm30_ind_folder(remote_dir: str) -> None:
             print(f"[CM30-IND] No .ind.gz files in {remote_dir}")
             return
 
-        for remote_path in ind_paths:
-            file_name = os.path.basename(remote_path)
-            seq_str = file_name.split(".")[0]
-            try:
-                sequence_no = int(seq_str)
-            except ValueError:
-                sequence_no = None
+        # ✅ Already processed seq list (one query)
+        done_seqs = {
+            r[0]
+            for r in db.query(NseIngestionLog.seq)
+            .filter(
+                NseIngestionLog.trade_date == trade_date,
+                NseIngestionLog.segment == "CM30_IND",
+            )
+            .all()
+        }
 
-            print(f"[CM30-IND] Downloading {remote_path} (seq={sequence_no})")
+        skipped = 0
+        processed = 0
+
+        for remote_path in ind_paths:
+            file_name = os.path.basename(remote_path)  # "79.ind.gz"
+            seq_str = file_name.split(".")[0]
+
+            try:
+                seq = int(seq_str)
+            except ValueError:
+                continue
+
+            # ✅ SKIP if already processed
+            if seq in done_seqs:
+                skipped += 1
+                continue
+
+            print(f"[CM30-IND] Downloading {remote_path} (seq={seq})")
             gz_bytes = sftp.download_file(remote_path)
 
             fd, tmp_path = tempfile.mkstemp(suffix=".ind.gz")
@@ -487,55 +543,61 @@ def process_cm30_ind_folder(remote_dir: str) -> None:
 
             print(f"[CM30-IND] Parsed {len(records)} records from {file_name}")
 
+            rows = []
             for r in records:
                 ts_utc = datetime.fromtimestamp(r["timestamp"])
                 ts_ist = ts_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(IST)
 
-                index_token = int(r["index_token"] or 0)
+                index_token = int(r.get("index_token") or 0)
 
-                idx = NseCmIndex1Min(
-                    trade_date=trade_date,
-                    interval_start=ts_ist,
-                    index_id=index_token,
-                    # Abhi ke liye index_name = token string; later NseIndexMaster se resolve kar sakte
-                    index_name=str(index_token),
+                rows.append(
+                    NseCmIndex1Min(
+                        trade_date=trade_date,
+                        interval_start=ts_ist,
+                        index_id=index_token,
+                        index_name=str(index_token),
 
-                    open_price=_safe_price(r["open_index_value"]),
-                    high_price=_safe_price(r["high_index_value"]),
-                    low_price=_safe_price(r["low_index_value"]),
-                    close_price=_safe_price(
-                        r.get("interval_close_index_value")
-                        or r.get("current_index_value")
-                    ),
-                    last_price=_safe_price(r["current_index_value"]),
-                    avg_price=None,
+                        open_price=_safe_price(r.get("open_index_value")),
+                        high_price=_safe_price(r.get("high_index_value")),
+                        low_price=_safe_price(r.get("low_index_value")),
+                        close_price=_safe_price(
+                            r.get("interval_close_index_value") or r.get("current_index_value")
+                        ),
+                        last_price=_safe_price(r.get("current_index_value")),
+                        avg_price=None,
 
-                    percentage_change=_safe_pct(r.get("percentage_change")),
-                    indicative_close_value=_safe_price(
-                        r.get("indicative_close_index_value")
-                    ),
+                        percentage_change=_safe_pct(r.get("percentage_change")),
+                        indicative_close_value=_safe_price(r.get("indicative_close_index_value")),
 
-                    interval_open_price=_safe_price(
-                        r.get("interval_open_index_value")
-                    ),
-                    interval_high_price=_safe_price(
-                        r.get("interval_high_index_value")
-                    ),
-                    interval_low_price=_safe_price(
-                        r.get("interval_low_index_value")
-                    ),
-                    interval_close_price=_safe_price(
-                        r.get("interval_close_index_value")
-                    ),
+                        interval_open_price=_safe_price(r.get("interval_open_index_value")),
+                        interval_high_price=_safe_price(r.get("interval_high_index_value")),
+                        interval_low_price=_safe_price(r.get("interval_low_index_value")),
+                        interval_close_price=_safe_price(r.get("interval_close_index_value")),
 
-                    volume=None,
-                    turnover=None,
+                        volume=None,
+                        turnover=None,
+                    )
                 )
-                db.add(idx)
+
+            if rows:
+                db.bulk_save_objects(rows)
+
+            # ✅ Mark this seq as processed
+            db.add(
+                NseIngestionLog(
+                    trade_date=trade_date,
+                    segment="CM30_IND",
+                    seq=seq,
+                    remote_path=remote_path,
+                )
+            )
 
             db.commit()
+            done_seqs.add(seq)
+            processed += 1
+            print(f"[CM30-IND] ✅ Committed data for {file_name}")
 
-        print(f"[CM30-IND] Done folder {remote_dir}")
+        print(f"[CM30-IND] Done folder {remote_dir} | processed={processed}, skipped={skipped}")
 
     except Exception as e:
         db.rollback()
@@ -544,7 +606,6 @@ def process_cm30_ind_folder(remote_dir: str) -> None:
     finally:
         db.close()
         sftp.close()
-
 
 # ======================================================================
 #  Helper: One-shot for a given trade_date (today, backfill, etc.)
@@ -566,39 +627,42 @@ def process_cm30_for_date(trade_date: date) -> None:
 
 def process_cm30_security_for_date(trade_date: date) -> None:
     """
-    date -> /CM30/SECURITY/<MonthDDYYYY>/Securities.dat
-    NSE binary Securities.dat ko parse karke nse_cm_securities me upsert karega.
+    Fast upsert Securities.dat into nse_cm_securities
+
+    Key optimizations:
+    - NO per-row SELECT
+    - preload token_id -> id map once
+    - batch bulk inserts + bulk updates
+    - commit in chunks
     """
-    print("trade_date :: ",trade_date)
+    print("trade_date :: ", trade_date)
     folder_name = _nse_folder_name(trade_date)
     remote_dir = f"/CM30/SECURITY/{folder_name}"
     remote_file = f"{remote_dir}/Securities.dat"
 
     sftp = SFTPClient()
     db: Session = SessionLocal()
-    local_path = None
+    local_path: Optional[str] = None
+
+    # batching
+    BATCH_SIZE = 2000
 
     try:
         print(f"[CM30-SEC] Processing Securities master for {trade_date} ({remote_file})")
 
-        # --- SFTP: download binary file ---
         try:
             file_bytes = sftp.download_file(remote_file)
         except Exception as e:
             print(f"[CM30-SEC] ERROR downloading {remote_file}: {e}")
             return
 
-        # --- Local temp file me save karo (converter file path leta hai) ---
         fd, local_path = tempfile.mkstemp(suffix=".dat")
         with os.fdopen(fd, "wb") as tmp:
             tmp.write(file_bytes)
 
         conv = SecuritiesConverter()
 
-        # 1) Try proper header-based dynamic parsing
         securities = conv.extract_securities_dynamic(local_path)
-
-        # 2) Agar kuch nahi mila to brute-force fallback
         if not securities:
             print("[CM30-SEC] extract_securities_dynamic returned 0, trying alternative parsing...")
             securities = conv.try_alternative_parsing(local_path)
@@ -609,8 +673,36 @@ def process_cm30_security_for_date(trade_date: date) -> None:
 
         print(f"[CM30-SEC] Parsed {len(securities)} securities from {remote_file}")
 
-        upserted = 0
-        for rec in securities:
+        # ✅ Preload: token_id -> (row id)  (only once)
+        existing = db.query(NseCmSecurity.id, NseCmSecurity.token_id).all()
+        token_to_pk = {t: pk for pk, t in existing}
+        print(f"[CM30-SEC] Existing securities in DB: {len(token_to_pk)}")
+
+        FREEZE_DIV = 100.0
+        TICK_DIV = 100.0
+
+        inserts: List[NseCmSecurity] = []
+        updates: List[Dict[str, Any]] = []
+
+        inserted = 0
+        updated = 0
+
+        def flush_batch():
+            nonlocal inserted, updated, inserts, updates
+            if inserts:
+                db.bulk_save_objects(inserts)
+                inserted += len(inserts)
+                inserts = []
+
+            if updates:
+                db.bulk_update_mappings(NseCmSecurity, updates)
+                updated += len(updates)
+                updates = []
+
+            db.commit()
+
+        for i, rec in enumerate(securities, start=1):
+            print("i :: ", i)
             try:
                 token_id = int(rec["token_number"])
             except (KeyError, ValueError, TypeError):
@@ -618,7 +710,6 @@ def process_cm30_security_for_date(trade_date: date) -> None:
 
             symbol = (rec.get("symbol") or "").strip()
             if not symbol:
-                # model me symbol nullable=False hai, to blank waale skip kar dete hain
                 continue
 
             series = (rec.get("series") or "").strip() or None
@@ -626,50 +717,91 @@ def process_cm30_security_for_date(trade_date: date) -> None:
 
             issued_capital = rec.get("issued_capital")
             settlement_cycle = rec.get("settlement_cycle")
+
+            lot_size = rec.get("board_lot_quantity") or None
+            tick_size = _safe_div(rec.get("tick_size"), TICK_DIV)
+            freeze_pct = _safe_div(rec.get("freeze_percent"), FREEZE_DIV)
+            credit_rating = (rec.get("credit_rating") or "").strip() or None
             permitted_to_trade = rec.get("permitted_to_trade")
 
-            sec: NseCmSecurity | None = (
-                db.query(NseCmSecurity)
-                .filter(NseCmSecurity.token_id == token_id)
-                .one_or_none()
-            )
+            issue_start_date = _epoch_to_date(rec.get("issue_start_date"))
+            issue_end_date = _epoch_to_date(rec.get("issue_pdate"))
+            record_date = _epoch_to_date(rec.get("record_date"))
+            book_closure_start_date = _epoch_to_date(rec.get("book_closure_start_date"))
+            book_closure_end_date = _epoch_to_date(rec.get("book_closure_end_date"))
+            no_delivery_start_date = _epoch_to_date(rec.get("no_delivery_start_date"))
+            no_delivery_end_date = _epoch_to_date(rec.get("no_delivery_end_date"))
 
-            if sec is None:
-                # INSERT
-                sec = NseCmSecurity(
-                    token_id=token_id,
-                    symbol=symbol,
-                    series=series,
-                    isin=None,              # abhi binary se ISIN nahi nikal rahe
-                    company_name=company_name,
-                    lot_size=None,
-                    face_value=None,
-                    segment="CM",
-                    active_flag=True,
-                    issued_capital=issued_capital,
-                    settlement_cycle=settlement_cycle,
-                    permitted_to_trade=permitted_to_trade,
+            pk = token_to_pk.get(token_id)
+
+            if pk is None:
+                # INSERT object
+                inserts.append(
+                    NseCmSecurity(
+                        token_id=token_id,
+                        symbol=symbol,
+                        series=series,
+                        isin=None,
+                        company_name=company_name,
+                        lot_size=int(lot_size) if lot_size is not None else None,
+                        face_value=None,
+                        segment="CM",
+                        active_flag=True,
+                        issued_capital=issued_capital,
+                        settlement_cycle=settlement_cycle,
+                        tick_size=tick_size,
+                        freeze_percentage=freeze_pct,
+                        credit_rating=credit_rating,
+                        issue_start_date=issue_start_date,
+                        issue_end_date=issue_end_date,
+                        listing_date=None,
+                        record_date=record_date,
+                        book_closure_start_date=book_closure_start_date,
+                        book_closure_end_date=book_closure_end_date,
+                        no_delivery_start_date=no_delivery_start_date,
+                        no_delivery_end_date=no_delivery_end_date,
+                        permitted_to_trade=permitted_to_trade,
+                    )
                 )
-                db.add(sec)
             else:
-                # UPDATE (sirf non-empty values overwrite karein)
-                sec.symbol = symbol or sec.symbol
-                if series:
-                    sec.series = series
-                if company_name:
-                    sec.company_name = company_name
-                if issued_capital is not None:
-                    sec.issued_capital = issued_capital
-                if settlement_cycle is not None:
-                    sec.settlement_cycle = settlement_cycle
-                if permitted_to_trade is not None:
-                    sec.permitted_to_trade = permitted_to_trade
-                sec.active_flag = True
+                # UPDATE mapping (fast)
+                m: Dict[str, Any] = {"id": pk}
 
-            upserted += 1
+                # always refresh basics
+                m["symbol"] = symbol
+                m["series"] = series
+                m["company_name"] = company_name
+                m["active_flag"] = True
 
-        db.commit()
-        print(f"[CM30-SEC] ✅ Upserted {upserted} records into nse_cm_securities")
+                # extras
+                m["lot_size"] = int(lot_size) if lot_size is not None else None
+                m["issued_capital"] = issued_capital
+                m["settlement_cycle"] = settlement_cycle
+                m["tick_size"] = tick_size
+                m["freeze_percentage"] = freeze_pct
+                m["credit_rating"] = credit_rating
+                m["issue_start_date"] = issue_start_date
+                m["issue_end_date"] = issue_end_date
+                m["record_date"] = record_date
+                m["book_closure_start_date"] = book_closure_start_date
+                m["book_closure_end_date"] = book_closure_end_date
+                m["no_delivery_start_date"] = no_delivery_start_date
+                m["no_delivery_end_date"] = no_delivery_end_date
+                m["permitted_to_trade"] = permitted_to_trade
+
+                updates.append(m)
+
+            # ✅ flush every batch
+            if (len(inserts) + len(updates)) >= BATCH_SIZE:
+                flush_batch()
+
+            if i % 5000 == 0:
+                print(f"[CM30-SEC] progress: {i}/{len(securities)}")
+
+        # final flush
+        flush_batch()
+
+        print(f"[CM30-SEC] ✅ Done. inserted={inserted}, updated={updated}")
 
     except Exception as e:
         db.rollback()
