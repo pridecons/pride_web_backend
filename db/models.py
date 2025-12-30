@@ -14,11 +14,17 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     Enum,
+    func
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import ARRAY
 from db.connection import Base
 
+def ts_now():
+    return func.now()
+class TimestampMixin:
+    created_at = Column(DateTime(timezone=True), server_default=ts_now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=ts_now(), onupdate=ts_now(), nullable=False)
 
 # ============================================================
 # 1) SECURITY MASTER (Securities.dat)
@@ -355,8 +361,6 @@ class NseIndexConstituent(Base):
     def __repr__(self):
         return f"<NseIndexConstituent index_id={self.index_id} symbol={self.symbol} as_of={self.as_of_date}>"
 
-# db/models.py (add this model)
-
 class NseIngestionLog(Base):
     __tablename__ = "nse_ingestion_log"
 
@@ -373,3 +377,48 @@ class NseIngestionLog(Base):
         UniqueConstraint("trade_date", "segment", "seq", name="uq_ingestion_log_trade_segment_seq"),
     )
 
+class leadData(Base, TimestampMixin):
+    __tablename__ = "lead_data"
+
+    id                = Column(Integer, primary_key=True, autoincrement=True)
+    email             = Column(String(100), nullable=True, index=True)
+    mobile            = Column(String(20), nullable=True, index=True)
+    
+    full_name         = Column(String(100), nullable=True)
+    director_name     = Column(String(100), nullable=True)
+    father_name       = Column(String(100), nullable=True)
+    gender            = Column(String(10), nullable=True)
+    aadhaar           = Column(String(12), nullable=True)
+    pan               = Column(String(10), nullable=True)
+    state             = Column(String(100), nullable=True)
+    city              = Column(String(100), nullable=True)
+    district          = Column(String(100), nullable=True)
+    address           = Column(Text, nullable=True)
+    pincode           = Column(String(6), nullable=True)
+    country           = Column(String(50), nullable=True)
+    dob               = Column(Date, nullable=True)
+
+    gstin             = Column(String(15), nullable=True, default="URP")
+    alternate_mobile  = Column(String(20), nullable=True)
+    marital_status    = Column(String(20), nullable=True)
+    occupation        = Column(String(100), nullable=True)
+
+    kyc               = Column(Boolean, default=False, nullable=True)
+    kyc_id            = Column(String(100), nullable=True) #group_id
+    kyc_url           = Column(String(500), nullable=True)
+    url_date          = Column(DateTime(timezone=True), nullable=True)
+
+    step1             = Column(Boolean, default=False, nullable=True) #Enter phone number and otp
+    step2             = Column(Boolean, default=False, nullable=True) #Enter pan number
+    step3             = Column(Boolean, default=False, nullable=True) #Enter data
+    step4             = Column(Boolean, default=False, nullable=True) #Generate url
+    step5             = Column(Boolean, default=False, nullable=True) #Done kyc
+    session_id        = Column(String(500), nullable=True, index=True)
+    
+class OTP(Base):
+    __tablename__ = "otps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mobile = Column(String(20), nullable=False, index=True)
+    otp = Column(Integer, nullable=False)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

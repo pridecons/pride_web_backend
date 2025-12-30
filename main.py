@@ -15,14 +15,19 @@ from db.connection import engine, check_database_connection
 from db import models
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+#NSE Data
 from utils.NSE_Formater.data_ingestor import process_cm30_for_date, process_cm30_security_for_date
 from utils.NSE_Formater.bhavcopy_ingestor import process_cm_bhavcopy_for_date
 from fastapi.responses import JSONResponse
 from routes.NSE import Top_Marqee, Todays_Stock, Market_And_Sectors, Preopen_Movers, Most_Traded
 from routes.Cloude_Data import corporateAction, faoOiParticipant, fiidiiTrade, resultCalendar, ipo
 from routes.Cloude_Data.News import news
-from routes.Payment import plan, Payment
 from routes.static_proxy import static_proxy
+
+#Service
+from routes.Service.Payment import plan, Payment
+from routes.Service.KYC import Otp_Kyc, Pan_Kyc, Data_Kyc
+
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -123,7 +128,6 @@ app.add_middleware(
 
 # app.mount("/api/v1/static", StaticFiles(directory="static"), name="static")
 
-
 # Health check endpoint
 @app.get("/health")
 def health_check():
@@ -140,9 +144,15 @@ def health_check():
 
 # Register all your existing routes
 try:   
-    app.include_router(static_proxy.router, prefix="/api/v1")
+    #Service
+    app.include_router(Pan_Kyc.router, prefix="/api/v1")
+    app.include_router(Data_Kyc.router, prefix="/api/v1")
+    app.include_router(Otp_Kyc.router, prefix="/api/v1")
     app.include_router(Payment.router, prefix="/api/v1")
     app.include_router(plan.router, prefix="/api/v1")
+  
+    #NSE Data
+    app.include_router(static_proxy.router, prefix="/api/v1")
     app.include_router(news.router, prefix="/api/v1")
     app.include_router(ipo.router, prefix="/api/v1")
     app.include_router(resultCalendar.router, prefix="/api/v1")

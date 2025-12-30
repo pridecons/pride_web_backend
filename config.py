@@ -1,8 +1,12 @@
 from dotenv import load_dotenv
 import os
 from pydantic_settings import BaseSettings
+import logging
 
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -16,6 +20,10 @@ CF_R2_SECRET_ACCESS_KEY=os.getenv("CF_R2_SECRET_ACCESS_KEY")
 CF_R2_ACCOUNT_ID=os.getenv("CF_R2_ACCOUNT_ID")
 CF_R2_REGION=os.getenv("CF_R2_REGION")
 BUCKET_NAME="pride-web"
+
+PAN_API_KEY=os.getenv("PAN_API_KEY")
+PAN_API_ID=os.getenv("PAN_API_ID")
+PAN_TASK_ID_1=os.getenv("PAN_TASK_ID_1")
 
 class Settings(BaseSettings):
     # SFTP configuration
