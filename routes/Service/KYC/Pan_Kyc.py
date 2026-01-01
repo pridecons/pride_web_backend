@@ -9,7 +9,97 @@ from db.connection import SessionLocal  # make sure you have this (like your oth
 from datetime import datetime
 from typing import Dict, Any, Tuple, List, Optional
 
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Form, Query
+from sqlalchemy.orm import Session
+from db.models import leadData
+from db.connection import get_db
+from config import PAN_API_ID, PAN_API_KEY, PAN_TASK_ID_1
+import httpx
+import asyncio
+from db.connection import SessionLocal
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+
 router = APIRouter(prefix="/kyc", tags=["KYC"])
+
+KYC_GENERATE_URL = "https://crm.pridecons.com/api/v1/web/kyc"  # generate kyc
+
+# ... your existing helpers: _parse_dob, extract_pan_details, missing_fields_for_user, etc.
+
+def _dt_iso_from_date(d):
+    """Convert date -> ISO datetime string for /web/kyc (Pydantic datetime)."""
+    if not d:
+        return None
+    # 00:00:00
+    return datetime.combine(d, datetime.min.time()).isoformat()
+
+async def _call_generate_kyc(entry: leadData) -> Dict[str, Any]:
+    """
+    Calls /web/kyc to generate signing url.
+    Returns safe subset: {ok, kyc_id, signing_url, raw_status, error?}
+    """
+    payload = {
+        "mobile": entry.mobile,
+        "email": entry.email,
+
+        "full_name": entry.full_name,
+        "director_name": getattr(entry, "director_name", None),
+        "father_name": entry.father_name,
+        "gender": entry.gender,
+        "aadhaar": entry.aadhaar,  # masked ok (XXXX...)
+        "pan": entry.pan,
+
+        "state": entry.state,
+        "city": entry.city,
+        "district": entry.district,
+        "address": entry.address,
+        "pincode": entry.pincode,
+        "country": entry.country,
+        "dob": _dt_iso_from_date(entry.dob),
+
+        "gstin": entry.gstin,
+        "alternate_mobile": entry.alternate_mobile,
+        "marital_status": entry.marital_status,
+        "occupation": entry.occupation,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(KYC_GENERATE_URL, json=payload)
+
+        ok = r.status_code in (200, 201)
+
+        try:
+            data = r.json()
+        except Exception:
+            data = {}
+
+        # Your /web/kyc returns kyc_res from update_kyc_details
+        # example keys: kyc_id, signing_url
+        signing_url = None
+        kyc_id = None
+
+        if isinstance(data, dict):
+            kyc_id = data.get("kyc_id") or data.get("id") or data.get("group_id")
+            signing_url = data.get("signing_url") or data.get("kyc_url") or data.get("url")
+
+        return {
+            "ok": ok,
+            "status_code": r.status_code,
+            "kyc_id": kyc_id,
+            "signing_url": signing_url,
+            "error": None if ok else (data.get("detail") or data.get("message") or r.text),
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "status_code": None,
+            "kyc_id": None,
+            "signing_url": None,
+            "error": str(e),
+        }
+
 
 def _parse_dob(dob_str: Optional[str]):
     """
@@ -260,96 +350,6 @@ async def micro_pan_verification(
         "kyc_url": ""
     }
 
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Form, Query
-from sqlalchemy.orm import Session
-from db.models import leadData
-from db.connection import get_db
-from config import PAN_API_ID, PAN_API_KEY, PAN_TASK_ID_1
-import httpx
-import asyncio
-from db.connection import SessionLocal
-from datetime import datetime
-from typing import Dict, Any, List, Optional
-
-router = APIRouter(prefix="/kyc", tags=["KYC"])
-
-KYC_GENERATE_URL = "https://crm.pridecons.com/api/v1/web/kyc"  # generate kyc
-
-# ... your existing helpers: _parse_dob, extract_pan_details, missing_fields_for_user, etc.
-
-def _dt_iso_from_date(d):
-    """Convert date -> ISO datetime string for /web/kyc (Pydantic datetime)."""
-    if not d:
-        return None
-    # 00:00:00
-    return datetime.combine(d, datetime.min.time()).isoformat()
-
-async def _call_generate_kyc(entry: leadData) -> Dict[str, Any]:
-    """
-    Calls /web/kyc to generate signing url.
-    Returns safe subset: {ok, kyc_id, signing_url, raw_status, error?}
-    """
-    payload = {
-        "mobile": entry.mobile,
-        "email": entry.email,
-
-        "full_name": entry.full_name,
-        "director_name": getattr(entry, "director_name", None),
-        "father_name": entry.father_name,
-        "gender": entry.gender,
-        "aadhaar": entry.aadhaar,  # masked ok (XXXX...)
-        "pan": entry.pan,
-
-        "state": entry.state,
-        "city": entry.city,
-        "district": entry.district,
-        "address": entry.address,
-        "pincode": entry.pincode,
-        "country": entry.country,
-        "dob": _dt_iso_from_date(entry.dob),
-
-        "gstin": entry.gstin,
-        "alternate_mobile": entry.alternate_mobile,
-        "marital_status": entry.marital_status,
-        "occupation": entry.occupation,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(KYC_GENERATE_URL, json=payload)
-
-        ok = r.status_code in (200, 201)
-
-        try:
-            data = r.json()
-        except Exception:
-            data = {}
-
-        # Your /web/kyc returns kyc_res from update_kyc_details
-        # example keys: kyc_id, signing_url
-        signing_url = None
-        kyc_id = None
-
-        if isinstance(data, dict):
-            kyc_id = data.get("kyc_id") or data.get("id") or data.get("group_id")
-            signing_url = data.get("signing_url") or data.get("kyc_url") or data.get("url")
-
-        return {
-            "ok": ok,
-            "status_code": r.status_code,
-            "kyc_id": kyc_id,
-            "signing_url": signing_url,
-            "error": None if ok else (data.get("detail") or data.get("message") or r.text),
-        }
-
-    except Exception as e:
-        return {
-            "ok": False,
-            "status_code": None,
-            "kyc_id": None,
-            "signing_url": None,
-            "error": str(e),
-        }
 
 @router.get("/pan/check")
 async def pan_check(
