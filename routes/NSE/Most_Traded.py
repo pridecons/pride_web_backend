@@ -1,11 +1,11 @@
 # routes/NSE/Most_Traded.py
+# ✅ Optimized DB-friendly version (fixes: heavy IN-subquery reuse, upper/lower index-killers,
+# ✅ avoids GROUP BY + join-back pattern by using window functions, and reduces scans)
 
 import logging
-from datetime import date
-
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import func, select, literal
+from sqlalchemy.orm import Session
 
 from db.connection import get_db
 from db.models import (
@@ -18,24 +18,25 @@ from db.models import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/most-traded", tags=["Most Traded"])
 
-# ---- Helper: index mapping ----
 INDEX_MAP = {
     "NIFTY50": ("NIFTY 50", "NIFTY50"),
     "NIFTY100": ("NIFTY 100", "NIFTY100"),
     "NIFTY500": ("NIFTY 500", "NIFTY500"),
-    # "ALL" -> koi index filter nahi lagega
+    # "ALL" means no index filter
 }
 
 
-def _get_index_row(db: Session, index_code: str | None):
+# -----------------------------
+# Helpers
+# -----------------------------
+def _get_index_row(db: Session, index_code: str | None) -> NseIndexMaster | None:
     """
-    index_code: "NIFTY50" / "NIFTY100" / "NIFTY500" / "ALL" / None
-    return: (index_row or None)
+    index_code: ALL / NIFTY50 / NIFTY100 / NIFTY500 / None
     """
     if not index_code or index_code.upper() == "ALL":
         return None
 
-    idx = index_code.upper()
+    idx = index_code.upper().strip()
     if idx not in INDEX_MAP:
         raise HTTPException(
             status_code=400,
@@ -44,303 +45,240 @@ def _get_index_row(db: Session, index_code: str | None):
 
     name, short_code = INDEX_MAP[idx]
 
-    index_row = (
+    # Prefer exact match first (index-friendly)
+    row = (
         db.query(NseIndexMaster)
-        .filter(func.lower(NseIndexMaster.index_symbol) == name.lower())
+        .filter(
+            (NseIndexMaster.index_symbol == name)
+            | (NseIndexMaster.short_code == short_code)
+        )
         .one_or_none()
     )
 
-    if index_row is None:
-        index_row = (
+    # Fallback case-insensitive
+    if row is None:
+        row = (
+            db.query(NseIndexMaster)
+            .filter(func.lower(NseIndexMaster.index_symbol) == name.lower())
+            .one_or_none()
+        )
+    if row is None:
+        row = (
             db.query(NseIndexMaster)
             .filter(func.lower(NseIndexMaster.short_code) == short_code.lower())
             .one_or_none()
         )
 
-    if index_row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Index '{idx}' not found in NseIndexMaster",
-        )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Index '{idx}' not found in NseIndexMaster")
 
-    return index_row
+    return row
 
 
-def _build_token_subq_for_index(db: Session, index_row):
-    """
-    Agar index_row diya hai to uske constituents ke EQ token_ids ka subquery return karega.
-    Agar index_row None hai to None return karega (ALL).
-    """
-    if index_row is None:
-        return None
-
-    token_subq = (
-        db.query(NseCmSecurity.token_id)
-        .join(
-            NseIndexConstituent,
-            NseIndexConstituent.symbol == NseCmSecurity.symbol,
-        )
-        .filter(
-            NseIndexConstituent.index_id == index_row.id,
-            func.upper(NseCmSecurity.series) == "EQ",
-        )
-        .subquery()
-    )
-    return token_subq
-
-
-def _get_latest_and_prev_trade_dates(db: Session, token_subq):
-    """
-    latest & previous intraday trade_date for given tokens (or sabke liye if token_subq None).
-    """
-    base = db.query(func.max(NseCmIntraday1Min.trade_date))
-
-    if token_subq is not None:
-        base = base.filter(
-            NseCmIntraday1Min.token_id.in_(select(token_subq.c.token_id))
-        )
-
-    latest_trade_date = base.scalar()
-
-    if latest_trade_date is None:
-        raise HTTPException(
-            status_code=404,
-            detail="No intraday data found.",
-        )
-
-    prev_q = db.query(func.max(NseCmIntraday1Min.trade_date)).filter(
-        NseCmIntraday1Min.trade_date < latest_trade_date
-    )
-    if token_subq is not None:
-        prev_q = prev_q.filter(
-            NseCmIntraday1Min.token_id.in_(select(token_subq.c.token_id))
-        )
-
-    prev_trade_date = prev_q.scalar()
-    return latest_trade_date, prev_trade_date
-
-
-def _build_latest_bar_subq(db: Session, latest_trade_date, token_subq):
-    """
-    Har token ke liye latest_trade_date par last candle (max interval_start).
-    """
-    q = (
-        db.query(
-            NseCmIntraday1Min.token_id.label("token_id"),
-            func.max(NseCmIntraday1Min.interval_start).label("max_ts"),
-        )
-        .filter(NseCmIntraday1Min.trade_date == latest_trade_date)
-    )
-
-    if token_subq is not None:
-        q = q.filter(
-            NseCmIntraday1Min.token_id.in_(select(token_subq.c.token_id))
-        )
-
-    return q.group_by(NseCmIntraday1Min.token_id).subquery()
-
-
-def _build_prev_bar_subq(db: Session, prev_trade_date, token_subq):
-    """
-    Pichle trading day ka last candle per token.
-    """
-    if prev_trade_date is None:
-        return None
-
-    q = (
-        db.query(
-            NseCmIntraday1Min.token_id.label("token_id"),
-            func.max(NseCmIntraday1Min.interval_start).label("max_ts"),
-        )
-        .filter(NseCmIntraday1Min.trade_date == prev_trade_date)
-    )
-
-    if token_subq is not None:
-        q = q.filter(
-            NseCmIntraday1Min.token_id.in_(select(token_subq.c.token_id))
-        )
-
-    return q.group_by(NseCmIntraday1Min.token_id).subquery()
-
-
-def _compute_most_traded(
-    db: Session,
-    index_code: str = "ALL",
-    limit: int = 50,
-):
+def _compute_most_traded(db: Session, index_code: str = "ALL", limit: int = 50) -> dict:
     """
     MOST TRADED COMPANIES (volume-wise)
-    - latest intraday last_price
-    - previous trading day ka prev_close (intraday last candle se)
-    - change_pct = (last_price - prev_close) * 100 / prev_close
-    - activity_metric = coalesce(total_traded_qty, volume)
-    - sorted by activity_metric desc
+    - Picks latest candle per token for latest_trade_date (window fn)
+    - Picks last candle per token for prev_trade_date (window fn)
+    - Calculates prev_close, change_pct
+    - Sorts by activity_metric desc
     """
 
     index_row = _get_index_row(db, index_code)
-    token_subq = _build_token_subq_for_index(db, index_row)
 
-    latest_trade_date, prev_trade_date = _get_latest_and_prev_trade_dates(
-        db, token_subq
+    # 1) Token universe as a CTE (reused)
+    if index_row is not None:
+        tokens_cte = (
+            select(NseCmSecurity.token_id)
+            .select_from(NseCmSecurity)
+            .join(NseIndexConstituent, NseIndexConstituent.symbol == NseCmSecurity.symbol)
+            .where(
+                NseIndexConstituent.index_id == index_row.id,
+                NseCmSecurity.series == "EQ",  # ✅ avoid upper(series)
+            )
+            .distinct()
+            .cte("tokens")
+        )
+        token_filter = NseCmIntraday1Min.token_id.in_(select(tokens_cte.c.token_id))
+    else:
+        tokens_cte = None
+        token_filter = literal(True)
+
+    # 2) Latest trade_date (restricted if index provided)
+    latest_trade_date = db.execute(
+        select(func.max(NseCmIntraday1Min.trade_date)).where(token_filter)
+    ).scalar()
+
+    if latest_trade_date is None:
+        raise HTTPException(status_code=404, detail="No intraday data found.")
+
+    # 3) Previous trade_date
+    prev_trade_date = db.execute(
+        select(func.max(NseCmIntraday1Min.trade_date)).where(
+            token_filter, NseCmIntraday1Min.trade_date < latest_trade_date
+        )
+    ).scalar()
+
+    # 4) Latest candle per token for latest_trade_date (window fn)
+    latest_ranked = (
+        select(
+            NseCmIntraday1Min.token_id.label("token_id"),
+            NseCmIntraday1Min.interval_start.label("interval_start"),
+            NseCmIntraday1Min.last_price.label("last_price"),
+            NseCmIntraday1Min.total_traded_qty.label("total_traded_qty"),
+            NseCmIntraday1Min.volume.label("volume"),
+            func.row_number()
+            .over(
+                partition_by=NseCmIntraday1Min.token_id,
+                order_by=NseCmIntraday1Min.interval_start.desc(),
+            )
+            .label("rn"),
+        )
+        .where(
+            NseCmIntraday1Min.trade_date == latest_trade_date,
+            token_filter,
+        )
+        .cte("latest_ranked")
     )
 
-    latest_bar_subq = _build_latest_bar_subq(db, latest_trade_date, token_subq)
-    prev_bar_subq = _build_prev_bar_subq(db, prev_trade_date, token_subq)
+    latest_one = (
+        select(
+            latest_ranked.c.token_id,
+            latest_ranked.c.interval_start,
+            latest_ranked.c.last_price,
+            latest_ranked.c.total_traded_qty,
+            latest_ranked.c.volume,
+        )
+        .where(latest_ranked.c.rn == 1)
+        .cte("latest_one")
+    )
 
-    LatestBar = aliased(NseCmIntraday1Min)
-    PrevBar = aliased(NseCmIntraday1Min)
+    # volume metric
+    activity_metric = func.coalesce(latest_one.c.total_traded_qty, latest_one.c.volume)
 
-    # Volume metric (most traded)
-    volume_expr = func.coalesce(LatestBar.total_traded_qty, LatestBar.volume)
-
-    if prev_bar_subq is not None:
-        prev_close_expr = func.coalesce(PrevBar.close_price, PrevBar.last_price)
-        change_pct_expr = (
-            (LatestBar.last_price - prev_close_expr)
-            * 100.0
-            / func.nullif(prev_close_expr, 0.0)
+    # 5) Prev day last candle per token (if available)
+    if prev_trade_date is not None:
+        prev_ranked = (
+            select(
+                NseCmIntraday1Min.token_id.label("token_id"),
+                func.coalesce(NseCmIntraday1Min.close_price, NseCmIntraday1Min.last_price).label(
+                    "prev_close"
+                ),
+                func.row_number()
+                .over(
+                    partition_by=NseCmIntraday1Min.token_id,
+                    order_by=NseCmIntraday1Min.interval_start.desc(),
+                )
+                .label("rn"),
+            )
+            .where(
+                NseCmIntraday1Min.trade_date == prev_trade_date,
+                token_filter,
+            )
+            .cte("prev_ranked")
         )
 
-        query = (
-            db.query(
-                NseCmSecurity.token_id,
-                NseCmSecurity.symbol,
-                NseCmSecurity.company_name,
-                LatestBar.last_price.label("last_price"),
-                prev_close_expr.label("prev_close"),
-                change_pct_expr.label("change_pct"),
-                LatestBar.total_traded_qty.label("total_traded_qty"),
-                LatestBar.volume.label("volume"),
-                volume_expr.label("activity_metric"),
-                LatestBar.interval_start,
-            )
-            .select_from(LatestBar)
-            .join(
-                latest_bar_subq,
-                (LatestBar.token_id == latest_bar_subq.c.token_id)
-                & (LatestBar.interval_start == latest_bar_subq.c.max_ts),
-            )
-            .join(
-                NseCmSecurity,
-                NseCmSecurity.token_id == LatestBar.token_id,
-            )
-            .outerjoin(
-                prev_bar_subq,
-                prev_bar_subq.c.token_id == LatestBar.token_id,
-            )
-            .outerjoin(
-                PrevBar,
-                (PrevBar.token_id == prev_bar_subq.c.token_id)
-                & (PrevBar.interval_start == prev_bar_subq.c.max_ts),
-            )
-            .filter(
-                func.upper(NseCmSecurity.series) == "EQ",
-                LatestBar.last_price.isnot(None),
-                volume_expr.isnot(None),
-            )
+        prev_one = (
+            select(prev_ranked.c.token_id, prev_ranked.c.prev_close)
+            .where(prev_ranked.c.rn == 1)
+            .cte("prev_one")
         )
     else:
-        # prev day missing -> no prev_close/change_pct
-        query = (
-            db.query(
+        prev_one = None
+
+    # 6) Final query: join security metadata + optional prev close
+    if prev_one is not None:
+        prev_close = prev_one.c.prev_close
+        change_pct = (
+            (latest_one.c.last_price - prev_close)
+            * 100.0
+            / func.nullif(prev_close, 0.0)
+        )
+
+        stmt = (
+            select(
                 NseCmSecurity.token_id,
                 NseCmSecurity.symbol,
                 NseCmSecurity.company_name,
-                LatestBar.last_price.label("last_price"),
-                func.cast(None, LatestBar.last_price.type).label("prev_close"),
-                func.cast(None, LatestBar.last_price.type).label("change_pct"),
-                LatestBar.total_traded_qty.label("total_traded_qty"),
-                LatestBar.volume.label("volume"),
-                volume_expr.label("activity_metric"),
-                LatestBar.interval_start,
+                latest_one.c.last_price.label("last_price"),
+                prev_close.label("prev_close"),
+                change_pct.label("change_pct"),
+                latest_one.c.total_traded_qty.label("total_traded_qty"),
+                latest_one.c.volume.label("volume"),
+                activity_metric.label("activity_metric"),
+                latest_one.c.interval_start.label("interval_start"),
             )
-            .select_from(LatestBar)
-            .join(
-                latest_bar_subq,
-                (LatestBar.token_id == latest_bar_subq.c.token_id)
-                & (LatestBar.interval_start == latest_bar_subq.c.max_ts),
+            .select_from(latest_one)
+            .join(NseCmSecurity, NseCmSecurity.token_id == latest_one.c.token_id)
+            .outerjoin(prev_one, prev_one.c.token_id == latest_one.c.token_id)
+            .where(
+                NseCmSecurity.series == "EQ",  # ✅ avoid upper(series)
+                latest_one.c.last_price.isnot(None),
+                activity_metric.isnot(None),
             )
-            .join(
-                NseCmSecurity,
-                NseCmSecurity.token_id == LatestBar.token_id,
+            .order_by(activity_metric.desc())
+            .limit(limit)
+        )
+    else:
+        stmt = (
+            select(
+                NseCmSecurity.token_id,
+                NseCmSecurity.symbol,
+                NseCmSecurity.company_name,
+                latest_one.c.last_price.label("last_price"),
+                literal(None).label("prev_close"),
+                literal(None).label("change_pct"),
+                latest_one.c.total_traded_qty.label("total_traded_qty"),
+                latest_one.c.volume.label("volume"),
+                activity_metric.label("activity_metric"),
+                latest_one.c.interval_start.label("interval_start"),
             )
-            .filter(
-                func.upper(NseCmSecurity.series) == "EQ",
-                LatestBar.last_price.isnot(None),
-                volume_expr.isnot(None),
+            .select_from(latest_one)
+            .join(NseCmSecurity, NseCmSecurity.token_id == latest_one.c.token_id)
+            .where(
+                NseCmSecurity.series == "EQ",
+                latest_one.c.last_price.isnot(None),
+                activity_metric.isnot(None),
             )
+            .order_by(activity_metric.desc())
+            .limit(limit)
         )
 
-    # Agar specific index hai to symbol/index_id se constrain karo
-    if index_row is not None:
-        query = query.join(
-            NseIndexConstituent,
-            (NseIndexConstituent.symbol == NseCmSecurity.symbol)
-            & (NseIndexConstituent.index_id == index_row.id),
-        )
+    rows = db.execute(stmt).mappings().all()
 
-    query = query.order_by(volume_expr.desc()).limit(limit)
-
-    rows = query.all()
+    db.close()
 
     return {
         "index": index_code.upper() if index_code else "ALL",
         "index_id": index_row.id if index_row is not None else None,
-        "latest_trade_date": latest_trade_date.isoformat()
-        if latest_trade_date
-        else None,
-        "prev_trade_date": prev_trade_date.isoformat()
-        if prev_trade_date
-        else None,
+        "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
+        "prev_trade_date": prev_trade_date.isoformat() if prev_trade_date else None,
         "count": len(rows),
         "data": [
             {
-                "token_id": r.token_id,
-                "symbol": r.symbol,
-                "company_name": r.company_name,
-                "last_price": float(r.last_price)
-                if r.last_price is not None
-                else None,
-                "prev_close": float(r.prev_close)
-                if getattr(r, "prev_close", None) is not None
-                else None,
-                "change_pct": float(r.change_pct)
-                if getattr(r, "change_pct", None) is not None
-                else None,
-                "total_traded_qty": int(r.total_traded_qty)
-                if r.total_traded_qty is not None
-                else None,
-                "volume": int(r.volume) if r.volume is not None else None,
-                "activity_metric": int(r.activity_metric)
-                if r.activity_metric is not None
-                else None,
-                "interval_start": r.interval_start.isoformat()
-                if r.interval_start
-                else None,
+                "token_id": r["token_id"],
+                "symbol": r["symbol"],
+                "company_name": r["company_name"],
+                "last_price": float(r["last_price"]) if r["last_price"] is not None else None,
+                "prev_close": float(r["prev_close"]) if r["prev_close"] is not None else None,
+                "change_pct": float(r["change_pct"]) if r["change_pct"] is not None else None,
+                "total_traded_qty": int(r["total_traded_qty"]) if r["total_traded_qty"] is not None else None,
+                "volume": int(r["volume"]) if r["volume"] is not None else None,
+                "activity_metric": int(r["activity_metric"]) if r["activity_metric"] is not None else None,
+                "interval_start": r["interval_start"].isoformat() if r["interval_start"] else None,
             }
             for r in rows
         ],
     }
 
 
-# ------------ FastAPI endpoint ------------
-
+# -----------------------------
+# FastAPI endpoint
+# -----------------------------
 @router.get("/")
 def most_traded_companies(
-    index: str = Query(
-        "ALL",
-        description="Index filter: ALL / NIFTY50 / NIFTY100 / NIFTY500",
-    ),
-    limit: int = Query(
-        10,
-        ge=1,
-        le=500,
-        description="Max number of rows to return",
-    ),
+    index: str = Query("ALL", description="Index filter: ALL / NIFTY50 / NIFTY100 / NIFTY500"),
+    limit: int = Query(10, ge=1, le=500, description="Max number of rows to return"),
     db: Session = Depends(get_db),
 ):
-    """
-    Most traded companies volume-wise.
-    By default ALL EQ stocks; optionally restrict by index (NIFTY50/100/500).
-    """
     return _compute_most_traded(db=db, index_code=index, limit=limit)

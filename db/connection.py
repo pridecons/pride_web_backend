@@ -44,8 +44,8 @@ except Exception as e:
 engine = create_engine(
     DATABASE_URL,
     echo=False,  # Set to True for SQL debugging
-    pool_size=10,
-    max_overflow=20,
+    pool_size=40,
+    max_overflow=30,
     pool_pre_ping=True,  # Validate connections before use
     pool_recycle=3600,   # Recycle connections every hour
     connect_args={
@@ -73,31 +73,38 @@ def receive_checkout(dbapi_connection, connection_record, connection_proxy):
 
 # Session factory
 SessionLocal = sessionmaker(
-    autocommit=False, 
-    autoflush=False, 
-    bind=engine
+    bind=engine,
+    autocommit=False,
+    autoflush=False,
+    future=True,
 )
 
 # Base class for models
 Base = declarative_base()
 
-# Improved dependency for FastAPI routes
+# Improved dependency for FastAPI routes (recommended)
 def get_db():
     """
-    Database dependency with proper error handling
+    ✅ Always closes transaction and returns connection to pool.
+
+    - If route did writes and committed: rollback() is harmless (no-op)
+    - If route was read-only: rollback() ends the implicit transaction
+    - On exception: rollback() ensures cleanup
     """
-    db = None
+    db = SessionLocal()
     try:
-        db = SessionLocal()
         yield db
     except Exception as e:
         logger.error(f"Database session error: {e}")
-        if db:
-            db.rollback()
+        db.rollback()
         raise
     finally:
-        if db:
-            db.close()
+        # ✅ closes any open transaction (especially GET/SELECT)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        db.close()
 
 # Health check function - FIXED for SQLAlchemy 2.0
 def check_database_connection():

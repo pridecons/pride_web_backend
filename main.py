@@ -51,7 +51,6 @@ def _cm30_job():
         logger.info(f"[CM30-JOB] Running ingestion for {today}")
 
         # 1) Pehle securities master load/update
-        process_cm30_security_for_date(today)
 
         # 2) Fir intraday mkt + ind data
         process_cm30_for_date(today)
@@ -63,6 +62,7 @@ def _bhavcopy_job():
     today = datetime.now().date()
     try:
         logger.info(f"[CM-BHAV-JOB] Running bhavcopy ingestion for {today}")
+        process_cm30_security_for_date(today)
         process_cm_bhavcopy_for_date(today)
     except Exception as e:
         logger.error(f"[CM-BHAV-JOB] Error: {e}", exc_info=True)
@@ -86,9 +86,9 @@ async def lifespan(app: FastAPI):
         logger.info("✅ DB tables created/verified")
 
         # Scheduler job setup
-        # scheduler.add_job(_cm30_job, "interval", minutes=1)
-        # scheduler.add_job(_bhavcopy_job, "cron", hour=18, minute=45)  
-        # scheduler.start()
+        scheduler.add_job(_cm30_job, "interval", minutes=1)
+        scheduler.add_job(_bhavcopy_job, "cron", hour=18, minute=45)  
+        scheduler.start()
         logger.info("✅ CM30 scheduler started (every 1 minute)")
 
         logger.info("🎉 Startup complete.")
@@ -190,7 +190,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8002,
+        port=8000,
         reload=True,
         log_level="info",
         reload_excludes=[

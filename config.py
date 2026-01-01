@@ -27,7 +27,8 @@ PAN_TASK_ID_1=os.getenv("PAN_TASK_ID_1")
 
 class Settings(BaseSettings):
     # SFTP configuration
-    SFTP_HOSTS: list[str] = ['snapshotsftp1.nseindia.com', 'snapshotsftp2.nseindia.com']
+    # SFTP_HOSTS: list[str] = ['snapshotsftp1.nseindia.com', 'snapshotsftp2.nseindia.com']
+    SFTP_HOSTS: list[str] = ['snapshotsftp2.nseindia.com']
     SFTP_PORT: int = 6010
     SFTP_USER: str = 'PTCPL_15MINCM'
     SFTP_PASS: str = ''

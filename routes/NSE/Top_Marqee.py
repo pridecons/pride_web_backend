@@ -1,7 +1,16 @@
 # routes/NSE/Top_Marqee.py
+# ✅ DB-optimized version (complete file)
+# Fixes:
+# - Avoids func.lower() on hot paths as much as possible (index killer) + keeps fallback
+# - Ensures "latest bar" is for the latest TRADE DATE (not across all history)
+# - Uses window function (row_number) instead of GROUP BY max() + join-back
+# - Uses tokens CTE to avoid repeated IN(subquery) overhead
+# - Uses Core select + execute (lighter than ORM .all() for big joins)
+
+import logging
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, select, literal
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from db.connection import get_db
 from db.models import (
@@ -11,106 +20,140 @@ from db.models import (
     NseCmSecurity,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/top-marqee", tags=["top marqee"])
 
 
-@router.get("/")
-async def nifty100TopMarqee(db: Session = Depends(get_db)):
-    """
-    NIFTY 100 ke saare constituents (EQ series) + unka latest price.
-    """
-
-    # 1) Index master se NIFTY 100 index nikalo
-    index_row = (
+def _get_nifty100_index_row(db: Session) -> NseIndexMaster:
+    # Prefer exact matches (index-friendly)
+    row = (
         db.query(NseIndexMaster)
-        .filter(func.lower(NseIndexMaster.index_symbol) == "nifty 100")
+        .filter(
+            (NseIndexMaster.index_symbol == "NIFTY 100")
+            | (NseIndexMaster.short_code == "NIFTY100")
+        )
         .one_or_none()
     )
 
-    if index_row is None:
-        index_row = (
+    # Fallback (in case your DB stores different casing)
+    if row is None:
+        row = (
+            db.query(NseIndexMaster)
+            .filter(func.lower(NseIndexMaster.index_symbol) == "nifty 100")
+            .one_or_none()
+        )
+    if row is None:
+        row = (
             db.query(NseIndexMaster)
             .filter(func.lower(NseIndexMaster.short_code) == "nifty100")
             .one_or_none()
         )
 
-    if index_row is None:
-        raise HTTPException(
-            status_code=404,
-            detail="NIFTY 100 index not found in NseIndexMaster",
-        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="NIFTY 100 index not found in NseIndexMaster")
 
-    # 2) NIFTY100 constituents -> securities (symbol match) -> sirf EQ series ke token_ids
-    token_subq = (
-        db.query(NseCmSecurity.token_id)
-        .join(
-            NseIndexConstituent,
-            (NseIndexConstituent.symbol == NseCmSecurity.symbol),
-        )
-        .filter(
+    return row
+
+
+@router.get("/")
+async def nifty100TopMarqee(db: Session = Depends(get_db)):
+    """
+    NIFTY 100 constituents (EQ series) + latest intraday price per token (latest trade_date, last candle).
+    """
+
+    index_row = _get_nifty100_index_row(db)
+
+    # 1) Token universe (NIFTY100 constituents + EQ) as CTE
+    tokens_cte = (
+        select(NseCmSecurity.token_id)
+        .select_from(NseIndexConstituent)
+        .join(NseCmSecurity, NseCmSecurity.symbol == NseIndexConstituent.symbol)
+        .where(
             NseIndexConstituent.index_id == index_row.id,
-            NseCmSecurity.series == "EQ",
+            NseCmSecurity.series == "EQ",  # ✅ no upper()
         )
-        .subquery()
+        .distinct()
+        .cte("tokens")
     )
+    token_filter = NseCmIntraday1Min.token_id.in_(select(tokens_cte.c.token_id))
 
-    # 3) Har token ke liye latest interval_start (most recent candle)
-    latest_bar_subq = (
-        db.query(
+    # 2) Latest trade_date for these tokens (IMPORTANT: don't pick max interval across all history)
+    latest_trade_date = db.execute(
+        select(func.max(NseCmIntraday1Min.trade_date)).where(token_filter)
+    ).scalar()
+
+    if latest_trade_date is None:
+        raise HTTPException(status_code=404, detail="No intraday data found for NIFTY 100 tokens")
+
+    # 3) Latest (last) candle per token for that latest_trade_date (window function)
+    ranked = (
+        select(
             NseCmIntraday1Min.token_id.label("token_id"),
-            func.max(NseCmIntraday1Min.interval_start).label("max_ts"),
+            NseCmIntraday1Min.interval_start.label("interval_start"),
+            NseCmIntraday1Min.last_price.label("last_price"),
+            NseCmIntraday1Min.close_price.label("close_price"),
+            func.row_number()
+            .over(
+                partition_by=NseCmIntraday1Min.token_id,
+                order_by=NseCmIntraday1Min.interval_start.desc(),
+            )
+            .label("rn"),
         )
-        .filter(NseCmIntraday1Min.token_id.in_(token_subq))
-        .group_by(NseCmIntraday1Min.token_id)
-        .subquery()
+        .where(
+            NseCmIntraday1Min.trade_date == latest_trade_date,
+            token_filter,
+        )
+        .cte("ranked")
     )
 
-    # 4) Securities (sirf EQ) + unke latest candles
-    query = (
-        db.query(
+    latest_one = (
+        select(
+            ranked.c.token_id,
+            ranked.c.interval_start,
+            ranked.c.last_price,
+            ranked.c.close_price,
+        )
+        .where(ranked.c.rn == 1)
+        .cte("latest_one")
+    )
+
+    # 4) Join security metadata + latest candle
+    stmt = (
+        select(
             NseCmSecurity.token_id,
             NseCmSecurity.symbol,
             NseCmSecurity.series,
             NseCmSecurity.company_name,
-            NseCmIntraday1Min.last_price,
-            NseCmIntraday1Min.close_price,
-            NseCmIntraday1Min.interval_start,
+            latest_one.c.last_price.label("last_price"),
+            latest_one.c.close_price.label("close_price"),
+            latest_one.c.interval_start.label("interval_start"),
         )
-        .join(
-            NseIndexConstituent,
-            (NseIndexConstituent.symbol == NseCmSecurity.symbol)
-            & (NseIndexConstituent.index_id == index_row.id),
-        )
-        .join(
-            latest_bar_subq,
-            latest_bar_subq.c.token_id == NseCmSecurity.token_id,
-        )
-        .join(
-            NseCmIntraday1Min,
-            (NseCmIntraday1Min.token_id == latest_bar_subq.c.token_id)
-            & (NseCmIntraday1Min.interval_start == latest_bar_subq.c.max_ts),
-        )
-        .filter(NseCmSecurity.series == "EQ")  # ✅ sirf EQ series
+        .select_from(latest_one)
+        .join(NseCmSecurity, NseCmSecurity.token_id == latest_one.c.token_id)
+        .where(NseCmSecurity.series == "EQ")
         .order_by(NseCmSecurity.symbol.asc())
     )
 
-    rows = query.all()
+    rows = db.execute(stmt).mappings().all()
 
     result = [
         {
-            "token_id": r.token_id,
-            "symbol": r.symbol,
-            "series": r.series,
-            "company_name": r.company_name,
-            "last_price": float(r.last_price) if r.last_price is not None else None,
-            "close_price": float(r.close_price) if r.close_price is not None else None,
-            "interval_start": r.interval_start.isoformat() if r.interval_start else None,
+            "token_id": r["token_id"],
+            "symbol": r["symbol"],
+            "series": r["series"],
+            "company_name": r["company_name"],
+            "last_price": float(r["last_price"]) if r["last_price"] is not None else None,
+            "close_price": float(r["close_price"]) if r["close_price"] is not None else None,
+            "interval_start": r["interval_start"].isoformat() if r["interval_start"] else None,
         }
         for r in rows
     ]
 
+    db.close()
+
     return {
         "index": "NIFTY 100",
+        "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
         "count": len(result),
         "data": result,
     }

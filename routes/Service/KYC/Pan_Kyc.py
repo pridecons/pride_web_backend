@@ -260,6 +260,97 @@ async def micro_pan_verification(
         "kyc_url": ""
     }
 
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Form, Query
+from sqlalchemy.orm import Session
+from db.models import leadData
+from db.connection import get_db
+from config import PAN_API_ID, PAN_API_KEY, PAN_TASK_ID_1
+import httpx
+import asyncio
+from db.connection import SessionLocal
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+
+router = APIRouter(prefix="/kyc", tags=["KYC"])
+
+KYC_GENERATE_URL = "https://crm.pridecons.com/api/v1/web/kyc"  # generate kyc
+
+# ... your existing helpers: _parse_dob, extract_pan_details, missing_fields_for_user, etc.
+
+def _dt_iso_from_date(d):
+    """Convert date -> ISO datetime string for /web/kyc (Pydantic datetime)."""
+    if not d:
+        return None
+    # 00:00:00
+    return datetime.combine(d, datetime.min.time()).isoformat()
+
+async def _call_generate_kyc(entry: leadData) -> Dict[str, Any]:
+    """
+    Calls /web/kyc to generate signing url.
+    Returns safe subset: {ok, kyc_id, signing_url, raw_status, error?}
+    """
+    payload = {
+        "mobile": entry.mobile,
+        "email": entry.email,
+
+        "full_name": entry.full_name,
+        "director_name": getattr(entry, "director_name", None),
+        "father_name": entry.father_name,
+        "gender": entry.gender,
+        "aadhaar": entry.aadhaar,  # masked ok (XXXX...)
+        "pan": entry.pan,
+
+        "state": entry.state,
+        "city": entry.city,
+        "district": entry.district,
+        "address": entry.address,
+        "pincode": entry.pincode,
+        "country": entry.country,
+        "dob": _dt_iso_from_date(entry.dob),
+
+        "gstin": entry.gstin,
+        "alternate_mobile": entry.alternate_mobile,
+        "marital_status": entry.marital_status,
+        "occupation": entry.occupation,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(KYC_GENERATE_URL, json=payload)
+
+        ok = r.status_code in (200, 201)
+
+        try:
+            data = r.json()
+        except Exception:
+            data = {}
+
+        # Your /web/kyc returns kyc_res from update_kyc_details
+        # example keys: kyc_id, signing_url
+        signing_url = None
+        kyc_id = None
+
+        if isinstance(data, dict):
+            kyc_id = data.get("kyc_id") or data.get("id") or data.get("group_id")
+            signing_url = data.get("signing_url") or data.get("kyc_url") or data.get("url")
+
+        return {
+            "ok": ok,
+            "status_code": r.status_code,
+            "kyc_id": kyc_id,
+            "signing_url": signing_url,
+            "error": None if ok else (data.get("detail") or data.get("message") or r.text),
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "status_code": None,
+            "kyc_id": None,
+            "signing_url": None,
+            "error": str(e),
+        }
+
 @router.get("/pan/check")
 async def pan_check(
     session_id: str = Query(...),
@@ -268,12 +359,15 @@ async def pan_check(
     if not session_id:
         raise HTTPException(status_code=400, detail="Not Authorized")
 
-    q = db.query(leadData).filter(leadData.session_id == session_id)
-
-    cached = q.first()
+    cached = (
+        db.query(leadData)
+          .filter(leadData.session_id == session_id)
+          .first()
+    )
     if not cached:
         raise HTTPException(status_code=404, detail="No KYC session found for given session_id")
 
+    # ✅ compute missing fields
     db_details = {
         "full_name": cached.full_name,
         "father_name": cached.father_name,
@@ -291,23 +385,58 @@ async def pan_check(
         "marital_status": cached.marital_status,
         "occupation": cached.occupation,
     }
-
     missing = missing_fields_for_user(db_details)
+
+    # ✅ If complete but url not generated => auto generate
+    kyc_triggered = False
+    kyc_ok = None
+    kyc_error = None
+
+    url_missing = (cached.kyc_url is None) or (str(cached.kyc_url).strip() == "")
+    if len(missing) == 0 and url_missing:
+        kyc_triggered = True
+
+        gen = await _call_generate_kyc(cached)
+        kyc_ok = gen["ok"]
+
+        if gen["ok"] and gen.get("signing_url"):
+            # ✅ save url + step4
+            cached.kyc_url = gen["signing_url"]
+
+            if hasattr(cached, "kyc_id") and gen.get("kyc_id"):
+                cached.kyc_id = gen["kyc_id"]
+
+            if hasattr(cached, "step4"):
+                cached.step4 = True
+
+            db.commit()
+            db.refresh(cached)
+        else:
+            kyc_error = gen.get("error") or "KYC generate failed"
 
     return {
         "success": True,
         "session_id": session_id,
-        "pan_number": cached.pan,            # safe
+        "pan_number": cached.pan,
         "source": "db",
         "missing_fields": missing,
         "is_complete": len(missing) == 0,
         "message": "Missing fields checked from database.",
+
+        # ✅ steps
         "step1": cached.step1,
         "step2": cached.step2,
         "step3": cached.step3,
         "step4": cached.step4,
         "step5": cached.step5,
-        "kyc_url": cached.kyc_url
+
+        # ✅ URL (after auto generate)
+        "kyc_url": cached.kyc_url,
+
+        # ✅ info (safe)
+        "kyc_triggered": kyc_triggered,
+        "kyc_ok": kyc_ok,
+        "kyc_error": kyc_error,
     }
 
 #api response = {

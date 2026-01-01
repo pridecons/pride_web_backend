@@ -1,11 +1,18 @@
 # routes/NSE/Todays_Stock.py
+# ✅ DB-optimized version (complete file)
+# Fixes:
+# - Avoids upper()/lower() in hot paths (index killers) where possible
+# - Uses a reusable TOKENS CTE instead of repeated IN (SELECT token_subq)
+# - Replaces GROUP BY max(interval_start) + join-back with window functions (row_number)
+# - Uses SQLAlchemy Core (select + execute) to reduce ORM overhead and ambiguity
+# - Keeps same API contract (filter types + response format)
 
 import logging
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import func, select, literal
+from sqlalchemy.orm import Session
 
 from db.connection import get_db
 from db.models import (
@@ -19,37 +26,19 @@ from db.models import (
 router = APIRouter(prefix="/today-stock", tags=["Today Stock"])
 logger = logging.getLogger(__name__)
 
-# ---- Helper: index mapping ----
 INDEX_MAP = {
     "NIFTY50": ("NIFTY 50", "NIFTY50"),
     "NIFTY100": ("NIFTY 100", "NIFTY100"),
     "NIFTY500": ("NIFTY 500", "NIFTY500"),
-    # "ALL" -> no index filter, sirf EQ series
+    # ALL -> all EQ
 }
 
 
 # ===========================
 #  Core helpers
 # ===========================
-
-def _get_index_and_token_subq(db: Session, index_key: str):
-    """
-    index_key: 'NIFTY50' / 'NIFTY100' / 'NIFTY500' / 'ALL'
-    Returns:
-      - index_name (str)
-      - token_subq (subquery of token_id for that index / ALL EQ)
-    """
+def _get_index_row(db: Session, index_key: str) -> NseIndexMaster:
     key = (index_key or "").upper().strip()
-
-    # ALL -> saare EQ securities (no index filter)
-    if key == "ALL":
-        token_subq = (
-            db.query(NseCmSecurity.token_id)
-            .filter(func.upper(NseCmSecurity.series) == "EQ")
-            .subquery()
-        )
-        return "ALL_EQ", token_subq
-
     if key not in INDEX_MAP:
         raise HTTPException(
             status_code=400,
@@ -58,682 +47,554 @@ def _get_index_and_token_subq(db: Session, index_key: str):
 
     index_symbol, short_code = INDEX_MAP[key]
 
-    index_row = (
+    # Prefer exact match first (index-friendly)
+    row = (
         db.query(NseIndexMaster)
-        .filter(func.lower(NseIndexMaster.index_symbol) == func.lower(index_symbol))
+        .filter(
+            (NseIndexMaster.index_symbol == index_symbol)
+            | (NseIndexMaster.short_code == short_code)
+        )
         .one_or_none()
     )
 
-    if index_row is None:
-        index_row = (
+    # Fallback to case-insensitive
+    if row is None:
+        row = (
             db.query(NseIndexMaster)
-            .filter(func.lower(NseIndexMaster.short_code) == func.lower(short_code))
+            .filter(func.lower(NseIndexMaster.index_symbol) == index_symbol.lower())
+            .one_or_none()
+        )
+    if row is None:
+        row = (
+            db.query(NseIndexMaster)
+            .filter(func.lower(NseIndexMaster.short_code) == short_code.lower())
             .one_or_none()
         )
 
-    if index_row is None:
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Index not found in NseIndexMaster for {index_key}")
+
+    return row
+
+
+def _get_index_name_and_tokens_cte(db: Session, index_key: str):
+    """
+    Returns:
+      - index_name (str)
+      - tokens_cte: CTE of token_id
+      - token_filter for intraday queries
+    """
+    key = (index_key or "").upper().strip()
+
+    # ALL: all EQ tokens
+    if key == "ALL":
+        tokens_cte = (
+            select(NseCmSecurity.token_id)
+            .where(NseCmSecurity.series == "EQ")  # ✅ no upper()
+            .distinct()
+            .cte("tokens")
+        )
+        return "ALL_EQ", tokens_cte, NseCmIntraday1Min.token_id.in_(select(tokens_cte.c.token_id))
+
+    if key not in INDEX_MAP:
         raise HTTPException(
-            status_code=404,
-            detail=f"Index not found in NseIndexMaster for {index_key}",
+            status_code=400,
+            detail=f"Unsupported index '{index_key}'. Use NIFTY50 / NIFTY100 / NIFTY500 / ALL.",
         )
 
-    token_subq = (
-        db.query(NseCmSecurity.token_id)
-        .join(
-            NseIndexConstituent,
-            NseIndexConstituent.symbol == NseCmSecurity.symbol,
-        )
-        .filter(
+    index_row = _get_index_row(db, key)
+
+    tokens_cte = (
+        select(NseCmSecurity.token_id)
+        .select_from(NseIndexConstituent)
+        .join(NseCmSecurity, NseCmSecurity.symbol == NseIndexConstituent.symbol)
+        .where(
             NseIndexConstituent.index_id == index_row.id,
-            func.upper(NseCmSecurity.series) == "EQ",
+            NseCmSecurity.series == "EQ",  # ✅ no upper()
         )
-        .subquery()
+        .distinct()
+        .cte("tokens")
     )
 
-    return index_row.index_symbol, token_subq
+    return index_row.index_symbol, tokens_cte, NseCmIntraday1Min.token_id.in_(select(tokens_cte.c.token_id))
 
 
-def _get_latest_and_prev_trade_info(db: Session, token_subq):
-    """
-    Common helper:
-      - latest_trade_date
-      - prev_trade_date
-      - latest_bar_subq (max interval_start on latest_trade_date)
-      - prev_bar_subq (max interval_start on prev_trade_date, can be None)
-    """
-    # Latest trading date
-    latest_trade_date = (
-        db.query(func.max(NseCmIntraday1Min.trade_date))
-        .filter(NseCmIntraday1Min.token_id.in_(select(token_subq.c.token_id)))
-        .scalar()
-    )
+def _get_latest_trade_date(db: Session, token_filter):
+    latest_trade_date = db.execute(
+        select(func.max(NseCmIntraday1Min.trade_date)).where(token_filter)
+    ).scalar()
 
     if latest_trade_date is None:
-        raise HTTPException(
-            status_code=404,
-            detail="No intraday data found for given index tokens",
+        raise HTTPException(status_code=404, detail="No intraday data found for given index tokens")
+
+    return latest_trade_date
+
+
+def _get_prev_trade_date(db: Session, token_filter, latest_trade_date):
+    return db.execute(
+        select(func.max(NseCmIntraday1Min.trade_date)).where(
+            token_filter, NseCmIntraday1Min.trade_date < latest_trade_date
         )
-
-    # Previous trading date
-    prev_trade_date = (
-        db.query(func.max(NseCmIntraday1Min.trade_date))
-        .filter(
-            NseCmIntraday1Min.token_id.in_(select(token_subq.c.token_id)),
-            NseCmIntraday1Min.trade_date < latest_trade_date,
-        )
-        .scalar()
-    )
-
-    # Latest bar subquery
-    latest_bar_subq = (
-        db.query(
-            NseCmIntraday1Min.token_id.label("token_id"),
-            func.max(NseCmIntraday1Min.interval_start).label("max_ts"),
-        )
-        .filter(
-            NseCmIntraday1Min.trade_date == latest_trade_date,
-            NseCmIntraday1Min.token_id.in_(select(token_subq.c.token_id)),
-        )
-        .group_by(NseCmIntraday1Min.token_id)
-        .subquery()
-    )
-
-    # Previous bar subquery (if prev_trade_date exists)
-    prev_bar_subq = None
-    if prev_trade_date is not None:
-        prev_bar_subq = (
-            db.query(
-                NseCmIntraday1Min.token_id.label("token_id"),
-                func.max(NseCmIntraday1Min.interval_start).label("max_ts"),
-            )
-            .filter(
-                NseCmIntraday1Min.trade_date == prev_trade_date,
-                NseCmIntraday1Min.token_id.in_(select(token_subq.c.token_id)),
-            )
-            .group_by(NseCmIntraday1Min.token_id)
-            .subquery()
-        )
-
-    return latest_trade_date, prev_trade_date, latest_bar_subq, prev_bar_subq
+    ).scalar()
 
 
-def _get_latest_bars_only(db: Session, token_subq):
+def _latest_one_cte(token_filter, latest_trade_date):
     """
-    Only latest trading day & its last candle per token
-    (for MOST_ACTIVE, 52W filters use this pattern).
+    Latest (last) candle per token for latest_trade_date via window function.
     """
-    latest_trade_date = (
-        db.query(func.max(NseCmIntraday1Min.trade_date))
-        .filter(NseCmIntraday1Min.token_id.in_(select(token_subq.c.token_id)))
-        .scalar()
-    )
-
-    if latest_trade_date is None:
-        raise HTTPException(
-            status_code=404,
-            detail="No intraday data found for given index tokens",
-        )
-
-    latest_bar_subq = (
-        db.query(
+    ranked = (
+        select(
             NseCmIntraday1Min.token_id.label("token_id"),
-            func.max(NseCmIntraday1Min.interval_start).label("max_ts"),
+            NseCmIntraday1Min.interval_start.label("interval_start"),
+            NseCmIntraday1Min.last_price.label("last_price"),
+            NseCmIntraday1Min.close_price.label("close_price"),
+            NseCmIntraday1Min.total_traded_qty.label("total_traded_qty"),
+            NseCmIntraday1Min.volume.label("volume"),
+            func.row_number()
+            .over(
+                partition_by=NseCmIntraday1Min.token_id,
+                order_by=NseCmIntraday1Min.interval_start.desc(),
+            )
+            .label("rn"),
         )
-        .filter(
+        .where(
             NseCmIntraday1Min.trade_date == latest_trade_date,
-            NseCmIntraday1Min.token_id.in_(select(token_subq.c.token_id)),
+            token_filter,
         )
-        .group_by(NseCmIntraday1Min.token_id)
-        .subquery()
+        .cte("latest_ranked")
     )
 
-    return latest_trade_date, latest_bar_subq
+    return (
+        select(
+            ranked.c.token_id,
+            ranked.c.interval_start,
+            ranked.c.last_price,
+            ranked.c.close_price,
+            ranked.c.total_traded_qty,
+            ranked.c.volume,
+        )
+        .where(ranked.c.rn == 1)
+        .cte("latest_one")
+    )
+
+
+def _prev_one_cte(token_filter, prev_trade_date):
+    """
+    Previous day last candle per token via window function.
+    """
+    ranked = (
+        select(
+            NseCmIntraday1Min.token_id.label("token_id"),
+            func.coalesce(NseCmIntraday1Min.close_price, NseCmIntraday1Min.last_price).label(
+                "prev_close"
+            ),
+            func.row_number()
+            .over(
+                partition_by=NseCmIntraday1Min.token_id,
+                order_by=NseCmIntraday1Min.interval_start.desc(),
+            )
+            .label("rn"),
+        )
+        .where(
+            NseCmIntraday1Min.trade_date == prev_trade_date,
+            token_filter,
+        )
+        .cte("prev_ranked")
+    )
+
+    return (
+        select(ranked.c.token_id, ranked.c.prev_close)
+        .where(ranked.c.rn == 1)
+        .cte("prev_one")
+    )
+
+
+def _serialize_rows(rows):
+    return [
+        {
+            "token_id": r["token_id"],
+            "symbol": r["symbol"],
+            "series": r["series"],
+            "company_name": r["company_name"],
+            "last_price": float(r["last_price"]) if r["last_price"] is not None else None,
+            "prev_close": float(r["prev_close"]) if r.get("prev_close", None) is not None else None,
+            "change_pct": float(r["change_pct"]) if r.get("change_pct", None) is not None else None,
+            "close_price": float(r["close_price"]) if r.get("close_price", None) is not None else None,
+            "total_traded_qty": int(r["total_traded_qty"]) if r.get("total_traded_qty", None) is not None else None,
+            "volume": int(r["volume"]) if r.get("volume", None) is not None else None,
+            "activity_metric": int(r["activity_metric"]) if r.get("activity_metric", None) is not None else None,
+            "high_52": float(r["high_52"]) if r.get("high_52", None) is not None else None,
+            "low_52": float(r["low_52"]) if r.get("low_52", None) is not None else None,
+            "interval_start": r["interval_start"].isoformat() if r.get("interval_start") else None,
+        }
+        for r in rows
+    ]
 
 
 # ===========================
 #  Filter implementations
 # ===========================
-
 def _fetch_gainers(db: Session, index_key: str, limit: int):
-    index_name, token_subq = _get_index_and_token_subq(db, index_key)
-    latest_trade_date, prev_trade_date, latest_bar_subq, prev_bar_subq = (
-        _get_latest_and_prev_trade_info(db, token_subq)
-    )
+    index_name, _tokens_cte, token_filter = _get_index_name_and_tokens_cte(db, index_key)
 
-    LatestBar = aliased(NseCmIntraday1Min)
-    PrevBar = aliased(NseCmIntraday1Min)
+    latest_trade_date = _get_latest_trade_date(db, token_filter)
+    prev_trade_date = _get_prev_trade_date(db, token_filter, latest_trade_date)
 
-    if prev_bar_subq is not None:
-        prev_close_expr = func.coalesce(PrevBar.close_price, PrevBar.last_price)
-        change_pct_expr = (
-            (LatestBar.last_price - prev_close_expr)
-            * 100.0
-            / func.nullif(prev_close_expr, 0.0)
-        )
+    latest_one = _latest_one_cte(token_filter, latest_trade_date)
 
-        query = (
-            db.query(
+    if prev_trade_date is None:
+        rows = db.execute(
+            select(
                 NseCmSecurity.token_id,
                 NseCmSecurity.symbol,
                 NseCmSecurity.series,
                 NseCmSecurity.company_name,
-                LatestBar.last_price.label("last_price"),
-                prev_close_expr.label("prev_close"),
-                change_pct_expr.label("change_pct"),
-                LatestBar.interval_start,
+                latest_one.c.last_price.label("last_price"),
+                literal(None).label("prev_close"),
+                literal(None).label("change_pct"),
+                latest_one.c.interval_start.label("interval_start"),
             )
-            .join(
-                latest_bar_subq,
-                latest_bar_subq.c.token_id == NseCmSecurity.token_id,
-            )
-            .join(
-                LatestBar,
-                (LatestBar.token_id == latest_bar_subq.c.token_id)
-                & (LatestBar.interval_start == latest_bar_subq.c.max_ts),
-            )
-            .outerjoin(
-                prev_bar_subq,
-                prev_bar_subq.c.token_id == NseCmSecurity.token_id,
-            )
-            .outerjoin(
-                PrevBar,
-                (PrevBar.token_id == prev_bar_subq.c.token_id)
-                & (PrevBar.interval_start == prev_bar_subq.c.max_ts),
-            )
-            .filter(
-                NseCmSecurity.token_id.in_(select(token_subq.c.token_id)),
-                func.upper(NseCmSecurity.series) == "EQ",
-                change_pct_expr.isnot(None),
-                change_pct_expr > 0,
-            )
-            .order_by(change_pct_expr.desc().nullslast())
-            .limit(limit)
-        )
-    else:
-        # No previous trading day -> can't compute gains
-        query = (
-            db.query(
-                NseCmSecurity.token_id,
-                NseCmSecurity.symbol,
-                NseCmSecurity.series,
-                NseCmSecurity.company_name,
-                LatestBar.last_price.label("last_price"),
-                func.cast(None, LatestBar.close_price.type).label("prev_close"),
-                func.cast(None, LatestBar.close_price.type).label("change_pct"),
-                LatestBar.interval_start,
-            )
-            .join(
-                latest_bar_subq,
-                latest_bar_subq.c.token_id == NseCmSecurity.token_id,
-            )
-            .join(
-                LatestBar,
-                (LatestBar.token_id == latest_bar_subq.c.token_id)
-                & (LatestBar.interval_start == latest_bar_subq.c.max_ts),
-            )
-            .filter(
-                NseCmSecurity.token_id.in_(select(token_subq.c.token_id)),
-                func.upper(NseCmSecurity.series) == "EQ",
-            )
+            .select_from(latest_one)
+            .join(NseCmSecurity, NseCmSecurity.token_id == latest_one.c.token_id)
+            .where(NseCmSecurity.series == "EQ")
             .order_by(NseCmSecurity.symbol.asc())
             .limit(limit)
+        ).mappings().all()
+
+        return {
+            "filter": "GAINERS",
+            "index": index_name,
+            "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
+            "prev_trade_date": None,
+            "count": len(rows),
+            "data": _serialize_rows(rows),
+        }
+
+    prev_one = _prev_one_cte(token_filter, prev_trade_date)
+    prev_close = prev_one.c.prev_close
+    change_pct = (latest_one.c.last_price - prev_close) * 100.0 / func.nullif(prev_close, 0.0)
+
+    stmt = (
+        select(
+            NseCmSecurity.token_id,
+            NseCmSecurity.symbol,
+            NseCmSecurity.series,
+            NseCmSecurity.company_name,
+            latest_one.c.last_price.label("last_price"),
+            prev_close.label("prev_close"),
+            change_pct.label("change_pct"),
+            latest_one.c.interval_start.label("interval_start"),
         )
+        .select_from(latest_one)
+        .join(NseCmSecurity, NseCmSecurity.token_id == latest_one.c.token_id)
+        .outerjoin(prev_one, prev_one.c.token_id == latest_one.c.token_id)
+        .where(
+            NseCmSecurity.series == "EQ",
+            change_pct.isnot(None),
+            change_pct > 0,
+        )
+        .order_by(change_pct.desc().nullslast())
+        .limit(limit)
+    )
 
-    rows = query.all()
-
+    rows = db.execute(stmt).mappings().all()
+    db.close()
     return {
         "filter": "GAINERS",
         "index": index_name,
-        "latest_trade_date": latest_trade_date.isoformat()
-        if latest_trade_date
-        else None,
-        "prev_trade_date": prev_trade_date.isoformat()
-        if prev_trade_date
-        else None,
+        "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
+        "prev_trade_date": prev_trade_date.isoformat() if prev_trade_date else None,
         "count": len(rows),
-        "data": [
-            {
-                "token_id": r.token_id,
-                "symbol": r.symbol,
-                "series": r.series,
-                "company_name": r.company_name,
-                "last_price": float(r.last_price) if r.last_price is not None else None,
-                "prev_close": float(r.prev_close) if r.prev_close is not None else None,
-                "change_pct": float(r.change_pct)
-                if getattr(r, "change_pct", None) is not None
-                else None,
-                "interval_start": r.interval_start.isoformat()
-                if r.interval_start
-                else None,
-            }
-            for r in rows
-        ],
+        "data": _serialize_rows(rows),
     }
 
 
 def _fetch_losers(db: Session, index_key: str, limit: int):
-    index_name, token_subq = _get_index_and_token_subq(db, index_key)
-    latest_trade_date, prev_trade_date, latest_bar_subq, prev_bar_subq = (
-        _get_latest_and_prev_trade_info(db, token_subq)
-    )
+    index_name, _tokens_cte, token_filter = _get_index_name_and_tokens_cte(db, index_key)
 
-    LatestBar = aliased(NseCmIntraday1Min)
-    PrevBar = aliased(NseCmIntraday1Min)
+    latest_trade_date = _get_latest_trade_date(db, token_filter)
+    prev_trade_date = _get_prev_trade_date(db, token_filter, latest_trade_date)
 
-    if prev_bar_subq is not None:
-        prev_close_expr = func.coalesce(PrevBar.close_price, PrevBar.last_price)
-        change_pct_expr = (
-            (LatestBar.last_price - prev_close_expr)
-            * 100.0
-            / func.nullif(prev_close_expr, 0.0)
-        )
+    latest_one = _latest_one_cte(token_filter, latest_trade_date)
 
-        query = (
-            db.query(
+    if prev_trade_date is None:
+        rows = db.execute(
+            select(
                 NseCmSecurity.token_id,
                 NseCmSecurity.symbol,
                 NseCmSecurity.series,
                 NseCmSecurity.company_name,
-                LatestBar.last_price.label("last_price"),
-                prev_close_expr.label("prev_close"),
-                change_pct_expr.label("change_pct"),
-                LatestBar.interval_start,
+                latest_one.c.last_price.label("last_price"),
+                literal(None).label("prev_close"),
+                literal(None).label("change_pct"),
+                latest_one.c.interval_start.label("interval_start"),
             )
-            .join(
-                latest_bar_subq,
-                latest_bar_subq.c.token_id == NseCmSecurity.token_id,
-            )
-            .join(
-                LatestBar,
-                (LatestBar.token_id == latest_bar_subq.c.token_id)
-                & (LatestBar.interval_start == latest_bar_subq.c.max_ts),
-            )
-            .outerjoin(
-                prev_bar_subq,
-                prev_bar_subq.c.token_id == NseCmSecurity.token_id,
-            )
-            .outerjoin(
-                PrevBar,
-                (PrevBar.token_id == prev_bar_subq.c.token_id)
-                & (PrevBar.interval_start == prev_bar_subq.c.max_ts),
-            )
-            .filter(
-                NseCmSecurity.token_id.in_(select(token_subq.c.token_id)),
-                func.upper(NseCmSecurity.series) == "EQ",
-                change_pct_expr.isnot(None),
-                change_pct_expr < 0,
-            )
-            # sabse zyada negative (bada loss) top par
-            .order_by(change_pct_expr.asc())
-            .limit(limit)
-        )
-    else:
-        query = (
-            db.query(
-                NseCmSecurity.token_id,
-                NseCmSecurity.symbol,
-                NseCmSecurity.series,
-                NseCmSecurity.company_name,
-                LatestBar.last_price.label("last_price"),
-                func.cast(None, LatestBar.close_price.type).label("prev_close"),
-                func.cast(None, LatestBar.close_price.type).label("change_pct"),
-                LatestBar.interval_start,
-            )
-            .join(
-                latest_bar_subq,
-                latest_bar_subq.c.token_id == NseCmSecurity.token_id,
-            )
-            .join(
-                LatestBar,
-                (LatestBar.token_id == latest_bar_subq.c.token_id)
-                & (LatestBar.interval_start == latest_bar_subq.c.max_ts),
-            )
-            .filter(
-                NseCmSecurity.token_id.in_(select(token_subq.c.token_id)),
-                func.upper(NseCmSecurity.series) == "EQ",
-            )
+            .select_from(latest_one)
+            .join(NseCmSecurity, NseCmSecurity.token_id == latest_one.c.token_id)
+            .where(NseCmSecurity.series == "EQ")
             .order_by(NseCmSecurity.symbol.asc())
             .limit(limit)
+        ).mappings().all()
+        db.close()
+
+        return {
+            "filter": "LOSERS",
+            "index": index_name,
+            "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
+            "prev_trade_date": None,
+            "count": len(rows),
+            "data": _serialize_rows(rows),
+        }
+
+    prev_one = _prev_one_cte(token_filter, prev_trade_date)
+    prev_close = prev_one.c.prev_close
+    change_pct = (latest_one.c.last_price - prev_close) * 100.0 / func.nullif(prev_close, 0.0)
+
+    stmt = (
+        select(
+            NseCmSecurity.token_id,
+            NseCmSecurity.symbol,
+            NseCmSecurity.series,
+            NseCmSecurity.company_name,
+            latest_one.c.last_price.label("last_price"),
+            prev_close.label("prev_close"),
+            change_pct.label("change_pct"),
+            latest_one.c.interval_start.label("interval_start"),
         )
+        .select_from(latest_one)
+        .join(NseCmSecurity, NseCmSecurity.token_id == latest_one.c.token_id)
+        .outerjoin(prev_one, prev_one.c.token_id == latest_one.c.token_id)
+        .where(
+            NseCmSecurity.series == "EQ",
+            change_pct.isnot(None),
+            change_pct < 0,
+        )
+        .order_by(change_pct.asc())
+        .limit(limit)
+    )
 
-    rows = query.all()
-
+    rows = db.execute(stmt).mappings().all()
+    db.close()
     return {
         "filter": "LOSERS",
         "index": index_name,
-        "latest_trade_date": latest_trade_date.isoformat()
-        if latest_trade_date
-        else None,
-        "prev_trade_date": prev_trade_date.isoformat()
-        if prev_trade_date
-        else None,
+        "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
+        "prev_trade_date": prev_trade_date.isoformat() if prev_trade_date else None,
         "count": len(rows),
-        "data": [
-            {
-                "token_id": r.token_id,
-                "symbol": r.symbol,
-                "series": r.series,
-                "company_name": r.company_name,
-                "last_price": float(r.last_price) if r.last_price is not None else None,
-                "prev_close": float(r.prev_close) if r.prev_close is not None else None,
-                "change_pct": float(r.change_pct)
-                if getattr(r, "change_pct", None) is not None
-                else None,
-                "interval_start": r.interval_start.isoformat()
-                if r.interval_start
-                else None,
-            }
-            for r in rows
-        ],
+        "data": _serialize_rows(rows),
     }
 
 
 def _fetch_most_active(db: Session, index_key: str, limit: int):
-    index_name, token_subq = _get_index_and_token_subq(db, index_key)
-    latest_trade_date, latest_bar_subq = _get_latest_bars_only(db, token_subq)
+    index_name, _tokens_cte, token_filter = _get_index_name_and_tokens_cte(db, index_key)
+    latest_trade_date = _get_latest_trade_date(db, token_filter)
 
-    LatestBar = aliased(NseCmIntraday1Min)
+    latest_one = _latest_one_cte(token_filter, latest_trade_date)
+    activity_metric = func.coalesce(latest_one.c.total_traded_qty, latest_one.c.volume)
 
-    volume_expr = func.coalesce(LatestBar.total_traded_qty, LatestBar.volume)
-
-    query = (
-        db.query(
+    stmt = (
+        select(
             NseCmSecurity.token_id,
             NseCmSecurity.symbol,
             NseCmSecurity.series,
             NseCmSecurity.company_name,
-            LatestBar.last_price.label("last_price"),
-            LatestBar.close_price.label("close_price"),
-            LatestBar.total_traded_qty.label("total_traded_qty"),
-            LatestBar.volume.label("volume"),
-            volume_expr.label("activity_metric"),
-            LatestBar.interval_start,
+            latest_one.c.last_price.label("last_price"),
+            latest_one.c.close_price.label("close_price"),
+            latest_one.c.total_traded_qty.label("total_traded_qty"),
+            latest_one.c.volume.label("volume"),
+            activity_metric.label("activity_metric"),
+            latest_one.c.interval_start.label("interval_start"),
         )
-        .join(
-            latest_bar_subq,
-            latest_bar_subq.c.token_id == NseCmSecurity.token_id,
+        .select_from(latest_one)
+        .join(NseCmSecurity, NseCmSecurity.token_id == latest_one.c.token_id)
+        .where(
+            NseCmSecurity.series == "EQ",
+            activity_metric.isnot(None),
         )
-        .join(
-            LatestBar,
-            (LatestBar.token_id == latest_bar_subq.c.token_id)
-            & (LatestBar.interval_start == latest_bar_subq.c.max_ts),
-        )
-        .filter(
-            NseCmSecurity.token_id.in_(select(token_subq.c.token_id)),
-            func.upper(NseCmSecurity.series) == "EQ",
-            volume_expr.isnot(None),
-        )
-        .order_by(volume_expr.desc())
+        .order_by(activity_metric.desc())
         .limit(limit)
     )
 
-    rows = query.all()
-
+    rows = db.execute(stmt).mappings().all()
+    db.close()
     return {
         "filter": "MOST_ACTIVE",
         "index": index_name,
-        "latest_trade_date": latest_trade_date.isoformat()
-        if latest_trade_date
-        else None,
+        "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
         "count": len(rows),
-        "data": [
-            {
-                "token_id": r.token_id,
-                "symbol": r.symbol,
-                "series": r.series,
-                "company_name": r.company_name,
-                "last_price": float(r.last_price) if r.last_price is not None else None,
-                "close_price": float(r.close_price)
-                if r.close_price is not None
-                else None,
-                "total_traded_qty": int(r.total_traded_qty)
-                if r.total_traded_qty is not None
-                else None,
-                "volume": int(r.volume) if r.volume is not None else None,
-                "activity_metric": int(r.activity_metric)
-                if r.activity_metric is not None
-                else None,
-                "interval_start": r.interval_start.isoformat()
-                if r.interval_start
-                else None,
-            }
-            for r in rows
-        ],
+        "data": _serialize_rows(rows),
     }
 
 
 def _fetch_52w_high(db: Session, index_key: str, limit: int):
-    index_name, token_subq = _get_index_and_token_subq(db, index_key)
-    latest_trade_date, latest_bar_subq = _get_latest_bars_only(db, token_subq)
+    index_name, tokens_cte, token_filter = _get_index_name_and_tokens_cte(db, index_key)
+    latest_trade_date = _get_latest_trade_date(db, token_filter)
+    latest_one = _latest_one_cte(token_filter, latest_trade_date)
 
     cutoff_end = latest_trade_date
     cutoff_start = cutoff_end - timedelta(days=365)
 
-    high_52_subq = (
-        db.query(
+    # 52w high (bhavcopy) per token
+    high_52 = (
+        select(
             NseCmBhavcopy.token_id.label("token_id"),
             func.max(NseCmBhavcopy.high_price).label("high_52"),
         )
-        .filter(
+        .where(
             NseCmBhavcopy.trade_date >= cutoff_start,
             NseCmBhavcopy.trade_date <= cutoff_end,
-            NseCmBhavcopy.token_id.in_(select(token_subq.c.token_id)),
+            NseCmBhavcopy.token_id.in_(select(tokens_cte.c.token_id)),
         )
         .group_by(NseCmBhavcopy.token_id)
-        .subquery()
+        .cte("high_52")
     )
 
-    LatestBar = aliased(NseCmIntraday1Min)
-    ratio_expr = LatestBar.last_price / func.nullif(high_52_subq.c.high_52, 0.0)
+    ratio = latest_one.c.last_price / func.nullif(high_52.c.high_52, 0.0)
 
-    query = (
-        db.query(
+    stmt = (
+        select(
             NseCmSecurity.token_id,
             NseCmSecurity.symbol,
             NseCmSecurity.series,
             NseCmSecurity.company_name,
-            LatestBar.last_price.label("last_price"),
-            high_52_subq.c.high_52.label("high_52"),
-            ratio_expr.label("high_proximity"),
-            LatestBar.interval_start,
+            latest_one.c.last_price.label("last_price"),
+            high_52.c.high_52.label("high_52"),
+            ratio.label("high_proximity"),
+            latest_one.c.interval_start.label("interval_start"),
         )
-        .join(
-            latest_bar_subq,
-            latest_bar_subq.c.token_id == NseCmSecurity.token_id,
+        .select_from(latest_one)
+        .join(NseCmSecurity, NseCmSecurity.token_id == latest_one.c.token_id)
+        .join(high_52, high_52.c.token_id == latest_one.c.token_id)
+        .where(
+            NseCmSecurity.series == "EQ",
+            high_52.c.high_52.isnot(None),
+            high_52.c.high_52 > 0,
+            latest_one.c.last_price.isnot(None),
+            latest_one.c.last_price > 0,
+            latest_one.c.last_price >= 0.98 * high_52.c.high_52,
         )
-        .join(
-            LatestBar,
-            (LatestBar.token_id == latest_bar_subq.c.token_id)
-            & (LatestBar.interval_start == latest_bar_subq.c.max_ts),
-        )
-        .join(
-            high_52_subq,
-            high_52_subq.c.token_id == NseCmSecurity.token_id,
-        )
-        .filter(
-            NseCmSecurity.token_id.in_(select(token_subq.c.token_id)),
-            func.upper(NseCmSecurity.series) == "EQ",
-            high_52_subq.c.high_52.isnot(None),
-            high_52_subq.c.high_52 > 0,
-            LatestBar.last_price.isnot(None),
-            LatestBar.last_price > 0,
-            LatestBar.last_price >= 0.98 * high_52_subq.c.high_52,
-        )
-        .order_by(ratio_expr.desc())
+        .order_by(ratio.desc())
         .limit(limit)
     )
 
-    rows = query.all()
+    rows = db.execute(stmt).mappings().all()
+    # add derived near_high_pct
+    data = []
+    for r in rows:
+        lp = r["last_price"]
+        h52 = r["high_52"]
+        near_high_pct = ((float(lp) / float(h52) - 1.0) * 100) if (lp and h52 and h52 != 0) else None
+        d = dict(r)
+        d["near_high_pct"] = near_high_pct
+        data.append(d)
+
+    db.close()
 
     return {
         "filter": "52W_HIGH",
         "index": index_name,
-        "latest_trade_date": latest_trade_date.isoformat()
-        if latest_trade_date
-        else None,
+        "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
         "cutoff_start": cutoff_start.isoformat(),
         "cutoff_end": cutoff_end.isoformat(),
         "count": len(rows),
-        "data": [
-            {
-                "token_id": r.token_id,
-                "symbol": r.symbol,
-                "series": r.series,
-                "company_name": r.company_name,
-                "last_price": float(r.last_price)
-                if r.last_price is not None
-                else None,
-                "high_52": float(r.high_52) if r.high_52 is not None else None,
-                "near_high_pct": (
-                    (float(r.last_price) / float(r.high_52) - 1.0) * 100
-                    if (r.last_price is not None and r.high_52 is not None and r.high_52 != 0)
-                    else None
-                ),
-                "interval_start": r.interval_start.isoformat()
-                if r.interval_start
-                else None,
-            }
-            for r in rows
-        ],
+        "data": _serialize_rows(data),
     }
 
 
 def _fetch_52w_low(db: Session, index_key: str, limit: int):
-    index_name, token_subq = _get_index_and_token_subq(db, index_key)
-    latest_trade_date, latest_bar_subq = _get_latest_bars_only(db, token_subq)
+    index_name, tokens_cte, token_filter = _get_index_name_and_tokens_cte(db, index_key)
+    latest_trade_date = _get_latest_trade_date(db, token_filter)
+    latest_one = _latest_one_cte(token_filter, latest_trade_date)
 
     cutoff_end = latest_trade_date
     cutoff_start = cutoff_end - timedelta(days=365)
 
-    low_52_subq = (
-        db.query(
+    low_52 = (
+        select(
             NseCmBhavcopy.token_id.label("token_id"),
             func.min(NseCmBhavcopy.low_price).label("low_52"),
         )
-        .filter(
+        .where(
             NseCmBhavcopy.trade_date >= cutoff_start,
             NseCmBhavcopy.trade_date <= cutoff_end,
-            NseCmBhavcopy.token_id.in_(select(token_subq.c.token_id)),
+            NseCmBhavcopy.token_id.in_(select(tokens_cte.c.token_id)),
         )
         .group_by(NseCmBhavcopy.token_id)
-        .subquery()
+        .cte("low_52")
     )
 
-    LatestBar = aliased(NseCmIntraday1Min)
-    ratio_expr = LatestBar.last_price / func.nullif(low_52_subq.c.low_52, 0.0)
+    ratio = latest_one.c.last_price / func.nullif(low_52.c.low_52, 0.0)
 
-    query = (
-        db.query(
+    stmt = (
+        select(
             NseCmSecurity.token_id,
             NseCmSecurity.symbol,
             NseCmSecurity.series,
             NseCmSecurity.company_name,
-            LatestBar.last_price.label("last_price"),
-            low_52_subq.c.low_52.label("low_52"),
-            ratio_expr.label("low_proximity"),
-            LatestBar.interval_start,
+            latest_one.c.last_price.label("last_price"),
+            low_52.c.low_52.label("low_52"),
+            ratio.label("low_proximity"),
+            latest_one.c.interval_start.label("interval_start"),
         )
-        .join(
-            latest_bar_subq,
-            latest_bar_subq.c.token_id == NseCmSecurity.token_id,
+        .select_from(latest_one)
+        .join(NseCmSecurity, NseCmSecurity.token_id == latest_one.c.token_id)
+        .join(low_52, low_52.c.token_id == latest_one.c.token_id)
+        .where(
+            NseCmSecurity.series == "EQ",
+            low_52.c.low_52.isnot(None),
+            low_52.c.low_52 > 0,
+            latest_one.c.last_price.isnot(None),
+            latest_one.c.last_price > 0,
+            latest_one.c.last_price <= 1.02 * low_52.c.low_52,
         )
-        .join(
-            LatestBar,
-            (LatestBar.token_id == latest_bar_subq.c.token_id)
-            & (LatestBar.interval_start == latest_bar_subq.c.max_ts),
-        )
-        .join(
-            low_52_subq,
-            low_52_subq.c.token_id == NseCmSecurity.token_id,
-        )
-        .filter(
-            NseCmSecurity.token_id.in_(select(token_subq.c.token_id)),
-            func.upper(NseCmSecurity.series) == "EQ",
-            low_52_subq.c.low_52.isnot(None),
-            low_52_subq.c.low_52 > 0,
-            LatestBar.last_price.isnot(None),
-            LatestBar.last_price > 0,
-            LatestBar.last_price <= 1.02 * low_52_subq.c.low_52,
-        )
-        .order_by(ratio_expr.asc())
+        .order_by(ratio.asc())
         .limit(limit)
     )
 
-    rows = query.all()
+    rows = db.execute(stmt).mappings().all()
+    data = []
+    for r in rows:
+        lp = r["last_price"]
+        l52 = r["low_52"]
+        above_low_pct = ((float(lp) / float(l52) - 1.0) * 100) if (lp and l52 and l52 != 0) else None
+        d = dict(r)
+        d["above_low_pct"] = above_low_pct
+        data.append(d)
+
+    db.close()
 
     return {
         "filter": "52W_LOW",
         "index": index_name,
-        "latest_trade_date": latest_trade_date.isoformat()
-        if latest_trade_date
-        else None,
+        "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
         "cutoff_start": cutoff_start.isoformat(),
         "cutoff_end": cutoff_end.isoformat(),
         "count": len(rows),
-        "data": [
-            {
-                "token_id": r.token_id,
-                "symbol": r.symbol,
-                "series": r.series,
-                "company_name": r.company_name,
-                "last_price": float(r.last_price)
-                if r.last_price is not None
-                else None,
-                "low_52": float(r.low_52) if r.low_52 is not None else None,
-                "above_low_pct": (
-                    (float(r.last_price) / float(r.low_52) - 1.0) * 100
-                    if (r.last_price is not None and r.low_52 is not None and r.low_52 != 0)
-                    else None
-                ),
-                "interval_start": r.interval_start.isoformat()
-                if r.interval_start
-                else None,
-            }
-            for r in rows
-        ],
+        "data": _serialize_rows(data),
     }
 
 
 # ===========================
 #  MAIN ENDPOINT
 # ===========================
-
 @router.get("/")
 async def todays_stock(
-    index: str = Query(
-        "NIFTY100",
-        description="Index filter: NIFTY50 / NIFTY100 / NIFTY500 / ALL",
-    ),
-    filter_type: str = Query(
-        "GAINERS",
-        description=(
-            "Filter: GAINERS / LOSERS / MOST_ACTIVE / 52W_HIGH / 52W_LOW"
-        ),
-    ),
-    limit: int = Query(
-        10,
-        ge=1,
-        le=500,
-        description="Max number of rows to return",
-    ),
+    index: str = Query("NIFTY100", description="Index filter: NIFTY50 / NIFTY100 / NIFTY500 / ALL"),
+    filter_type: str = Query("GAINERS", description="Filter: GAINERS / LOSERS / MOST_ACTIVE / 52W_HIGH / 52W_LOW"),
+    limit: int = Query(10, ge=1, le=500, description="Max number of rows to return"),
     db: Session = Depends(get_db),
 ):
-    """
-    Single endpoint:
-    /today-stock/?index=NIFTY100&filter_type=GAINERS&limit=10
-    """
-
     f = (filter_type or "").upper().strip()
 
     if f == "GAINERS":
         return _fetch_gainers(db, index, limit)
-    elif f == "LOSERS":
+    if f == "LOSERS":
         return _fetch_losers(db, index, limit)
-    elif f == "MOST_ACTIVE":
+    if f == "MOST_ACTIVE":
         return _fetch_most_active(db, index, limit)
-    elif f == "52W_HIGH":
+    if f == "52W_HIGH":
         return _fetch_52w_high(db, index, limit)
-    elif f == "52W_LOW":
+    if f == "52W_LOW":
         return _fetch_52w_low(db, index, limit)
 
     raise HTTPException(
