@@ -422,3 +422,10 @@ class OTP(Base):
     mobile = Column(String(20), nullable=False, index=True)
     otp = Column(Integer, nullable=False)
     timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+class MissingLogo(Base):
+    __tablename__ = "missing_logo"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(100), nullable=False, unique=True, index=True)  # ✅ unique
+    name = Column(String(200), nullable=False)
