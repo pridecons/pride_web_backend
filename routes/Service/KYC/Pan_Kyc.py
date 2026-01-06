@@ -211,6 +211,9 @@ def save_pan_verification_to_db(pan: str, api_data: dict, session_id: str):
         if not entry:
             entry = leadData(session_id=session_id, pan=pan)
             db.add(entry)
+        
+        # ✅ ALWAYS SAVE PAN (create OR update)
+        entry.pan = pan
 
         # ✅ Save available details
         if details.get("full_name"): entry.full_name = details["full_name"]
