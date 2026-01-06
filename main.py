@@ -29,6 +29,9 @@ from routes.Service.Payment import plan, Payment
 from routes.Service.KYC import Otp_Kyc, Pan_Kyc, Data_Kyc
 from routes.News import NewsAi
 
+#testing
+from routes.Missing_Logo import MissingLogo
+
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -145,6 +148,9 @@ def health_check():
 
 # Register all your existing routes
 try:   
+    #testing
+    app.include_router(MissingLogo.router, prefix="/api/v1")
+
     #Service
     app.include_router(NewsAi.router, prefix="/api/v1")
     app.include_router(Pan_Kyc.router, prefix="/api/v1")
