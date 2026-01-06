@@ -121,6 +121,13 @@ def get_latest_corporate_action(
 
             filtered.append(it)
 
+        def _sort_key(it: dict):
+            dt = _get_item_date(it)  # date or None
+            # None should go to bottom
+            return (dt is not None, dt)
+
+        filtered.sort(key=_sort_key, reverse=True)
+
         return {
             "latest_key": latest_key,
             "filters_applied": {
