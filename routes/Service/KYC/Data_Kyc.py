@@ -50,6 +50,7 @@ async def save_missing_fields(
     state: str = Form(None),
     pincode: str = Form(None),
     country: str = Form(None),
+    aadhaar: str = Form(None),
 
     alternate_mobile: str = Form(None),
     marital_status: str = Form(None),
@@ -60,8 +61,6 @@ async def save_missing_fields(
 ):
     # 1) Find row by session_id (and optionally pan)
     q = db.query(leadData).filter(leadData.session_id == session_id)
-    if pan:
-        q = q.filter(leadData.pan == pan.upper().strip())
 
     entry = q.first()
     if not entry:
@@ -91,6 +90,8 @@ async def save_missing_fields(
         "marital_status": marital_status,
         "occupation": occupation,
         "gstin": gstin,
+        "aadhaar": aadhaar,
+        "pan": pan,
     }
 
     updated_fields = []
@@ -135,6 +136,7 @@ async def save_missing_fields(
         "occupation": entry.occupation,
         "gstin": entry.gstin,
         "aadhaar": entry.aadhaar,
+        "pan": entry.pan
     }
     still_missing = missing_fields_for_user(details)
 
