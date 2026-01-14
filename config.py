@@ -27,6 +27,9 @@ PAN_TASK_ID_1=os.getenv("PAN_TASK_ID_1")
 
 NEWS_AI_API=os.getenv("NEWS_AI_API")
 
+CASHFREE_APP_ID=os.getenv("CASHFREE_APP_ID")
+CASHFREE_SECRET_KEY=os.getenv("CASHFREE_SECRET_KEY")
+
 class Settings(BaseSettings):
     # SFTP configuration
     # SFTP_HOSTS: list[str] = ['snapshotsftp1.nseindia.com', 'snapshotsftp2.nseindia.com']

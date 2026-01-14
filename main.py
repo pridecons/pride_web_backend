@@ -25,7 +25,7 @@ from routes.Cloude_Data.News import news
 from routes.static_proxy import static_proxy
 
 #Service
-from routes.Service.Payment import plan, Payment
+from routes.Service.Payment import plan, Payment, Payment_status
 from routes.Service.KYC import Otp_Kyc, Pan_Kyc, Data_Kyc
 from routes.News import NewsAi
 
@@ -152,6 +152,7 @@ try:
     app.include_router(MissingLogo.router, prefix="/api/v1")
 
     #Service
+    app.include_router(Payment_status.router, prefix="/api/v1")
     app.include_router(NewsAi.router, prefix="/api/v1")
     app.include_router(Pan_Kyc.router, prefix="/api/v1")
     app.include_router(Data_Kyc.router, prefix="/api/v1")
