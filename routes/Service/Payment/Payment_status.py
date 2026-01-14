@@ -1,11 +1,8 @@
 from typing import Optional, Dict
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from httpx import AsyncClient
 from config import CASHFREE_APP_ID, CASHFREE_SECRET_KEY
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Cashfree helpers
-# ──────────────────────────────────────────────────────────────────────────────
 router = APIRouter(prefix="/service/payment", tags=["payment"])
 
 def _base_url() -> str:
@@ -38,15 +35,31 @@ async def _call_cashfree(method: str, path: str, json_data: Optional[dict] = Non
 
 
 @router.get("/status")
-async def web_payment_status(order_id: str):
-    # 1) Cashfree se order fetch
+async def web_payment_status(order_id: str = Query(..., min_length=3)):
+    """
+    Returns order_status from Cashfree:
+    - PAID => success
+    - ACTIVE/PENDING => still processing
+    - EXPIRED/CANCELLED/FAILED etc => failed
+    """
+    if not order_id:
+        raise HTTPException(status_code=400, detail="order_id is required")
+
     cf = await _call_cashfree("GET", f"/orders/{order_id}")
 
-    # Cashfree order_status examples: PAID / ACTIVE / EXPIRED / CANCELLED (etc)
     order_status = (cf.get("order_status") or "").upper()
+
+    # Normalize to our UI statuses
+    if order_status == "PAID":
+        ui_status = "PAID"
+    elif order_status in ("ACTIVE", "PENDING"):
+        ui_status = "PENDING"
+    else:
+        ui_status = "FAILED"
 
     return {
         "order_id": order_id,
         "order_status": order_status,
-        "is_paid": order_status == "PAID",
+        "status": ui_status,          # ✅ frontend friendly
+        "is_paid": ui_status == "PAID",
     }
