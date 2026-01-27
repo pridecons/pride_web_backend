@@ -107,49 +107,77 @@ def save_stock_snapshot_bg(
 @router.get("/", summary="Get stock details (DB cache daily, else fetch + save)")
 async def get_stock_details(
     background_tasks: BackgroundTasks,
-    name: str = Query(..., min_length=1, description="Stock name, e.g. tata steel"),
+    symbol: Optional[str] = Query(None, description="Stock symbol, e.g. TCS"),
+    name: Optional[str] = Query(None, description="Stock name, e.g. tata steel"),
     db: Session = Depends(get_db),
 ):
-    # ✅ 1) DB check (today)
-    symbol_key = normalize_key(name)
+    if not symbol and not name:
+        raise HTTPException(status_code=400, detail="Please provide either 'symbol' or 'name'.")
+
     fdate = today_ist()
 
-    cached = (
-        db.query(StockDetail)
-        .filter(StockDetail.symbol == symbol_key, StockDetail.fetch_date == fdate)
-        .first()
-    )
-    if cached:
-        return {
-            "source": "db",
-            "symbol": cached.symbol,
-            "fetch_date": str(cached.fetch_date),
-            "data": cached.data,
-        }
+    # ✅ normalize keys
+    symbol_key = normalize_key(symbol) if symbol else None
+    name_key = normalize_key(name) if name else None
 
-    # ✅ 2) Fetch from RapidAPI
-    payload = await fetch_from_rapidapi(name)
+    # ✅ 1) DB check by symbol (priority)
+    if symbol_key:
+        cached = (
+            db.query(StockDetail)
+            .filter(StockDetail.symbol == symbol_key, StockDetail.fetch_date == fdate)
+            .first()
+        )
+        if cached:
+            return {
+                "source": "db",
+                "match": "symbol",
+                "symbol": cached.symbol,
+                "fetch_date": str(cached.fetch_date),
+                "data": cached.data,
+            }
+
+    # ✅ 2) DB check by name (fallback)
+    if name_key:
+        cached = (
+            db.query(StockDetail)
+            .filter(StockDetail.symbol == name_key, StockDetail.fetch_date == fdate)
+            .first()
+        )
+        if cached:
+            return {
+                "source": "db",
+                "match": "name",
+                "symbol": cached.symbol,
+                "fetch_date": str(cached.fetch_date),
+                "data": cached.data,
+            }
+
+    # ✅ 3) RapidAPI fetch: prefer name, else symbol
+    query_term = name or symbol  # RapidAPI expects `name` param
+    payload = await fetch_from_rapidapi(query_term)
 
     # ✅ DB ke liye slim payload (duplicate key hata do)
-    payload_for_db = dict(payload)  # shallow copy
-    payload_for_db.pop("stockFinancialData", None)  # ✅ remove if exists
+    payload_for_db = dict(payload)
+    payload_for_db.pop("stockFinancialData", None)
 
-    company_name = payload.get("companyName") or name
+    company_name = payload.get("companyName") or (name or symbol or "")
     industry = payload.get("industry")
+
+    # ✅ store key: prefer provided symbol, else name_key
+    store_key = symbol_key or name_key or normalize_key(company_name)
 
     background_tasks.add_task(
         save_stock_snapshot_bg,
-        symbol=symbol_key,
+        symbol=store_key,
         fetch_date=fdate,
-        payload=payload_for_db,  # ✅ DB me slim save hoga
+        payload=payload_for_db,
         company_name=company_name,
         industry=industry,
     )
 
-    # ✅ user ko full payload return
     return {
         "source": "rapidapi",
-        "symbol": symbol_key,
+        "symbol": store_key,
         "fetch_date": str(fdate),
         "data": payload,
     }
