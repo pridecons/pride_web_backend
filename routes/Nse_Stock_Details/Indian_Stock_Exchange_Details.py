@@ -1,8 +1,8 @@
 # routes/Nse_Stock_Details/Indian_Stock_Exchange_Details.py
 
 import logging
-from datetime import date
 from typing import Any, Dict, Optional
+from datetime import date, datetime
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -25,10 +25,8 @@ RAPID_URL = f"https://{RAPID_HOST}/stock"
 
 
 def today_ist() -> date:
-    # ✅ India timezone date for daily caching
-    # (server timezone may differ, so we use Asia/Kolkata)
     from zoneinfo import ZoneInfo
-    return date.today().fromtimestamp(__import__("time").time(), tz=ZoneInfo("Asia/Kolkata"))
+    return datetime.now(ZoneInfo("Asia/Kolkata")).date()
 
 
 def normalize_key(name: str) -> str:
