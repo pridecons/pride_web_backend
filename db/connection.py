@@ -43,9 +43,9 @@ except Exception as e:
 # Create engine with proper configuration
 engine = create_engine(
     DATABASE_URL,
-    echo=False,  # Set to True for SQL debugging
-    pool_size=40,
-    max_overflow=30,
+    echo=False,  # Set to True for SQL debugging100%
+    pool_size=12,
+    max_overflow=7,
     pool_pre_ping=True,  # Validate connections before use
     pool_recycle=3600,   # Recycle connections every hour
     connect_args={
@@ -84,13 +84,6 @@ Base = declarative_base()
 
 # Improved dependency for FastAPI routes (recommended)
 def get_db():
-    """
-    ✅ Always closes transaction and returns connection to pool.
-
-    - If route did writes and committed: rollback() is harmless (no-op)
-    - If route was read-only: rollback() ends the implicit transaction
-    - On exception: rollback() ensures cleanup
-    """
     db = SessionLocal()
     try:
         yield db
@@ -99,11 +92,6 @@ def get_db():
         db.rollback()
         raise
     finally:
-        # ✅ closes any open transaction (especially GET/SELECT)
-        try:
-            db.rollback()
-        except Exception:
-            pass
         db.close()
 
 # Health check function - FIXED for SQLAlchemy 2.0

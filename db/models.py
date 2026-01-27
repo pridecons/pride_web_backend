@@ -14,11 +14,13 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     Enum,
-    func
+    func,
+    JSON
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import ARRAY
 from db.connection import Base
+from sqlalchemy.sql import expression
 
 def ts_now():
     return func.now()
@@ -164,10 +166,28 @@ class NseCmBhavcopy(Base):
     )
 
     __table_args__ = (
+        # keep your current unique (for series not null use-case)
         UniqueConstraint(
             "trade_date", "symbol", "series",
             name="uq_nse_cm_bhavcopy_date_symbol_series",
         ),
+
+        # ✅ ensures no duplicates when series IS NULL (Postgres)
+        Index(
+            "uq_nse_cm_bhavcopy_date_symbol__series_null",
+            "trade_date", "symbol",
+            unique=True,
+            postgresql_where=expression.text("series IS NULL"),
+        ),
+
+        # ✅ ensures no duplicates when series IS NOT NULL (Postgres)
+        Index(
+            "uq_nse_cm_bhavcopy_date_symbol_series__series_not_null",
+            "trade_date", "symbol", "series",
+            unique=True,
+            postgresql_where=expression.text("series IS NOT NULL"),
+        ),
+
         Index("ix_nse_cm_bhavcopy_date_token", "trade_date", "token_id"),
     )
 
@@ -429,3 +449,194 @@ class MissingLogo(Base):
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String(100), nullable=False, unique=True, index=True)  # ✅ unique
     name = Column(String(200), nullable=False)
+
+# mutual fund tables  (MINIMUM, category/subcategory as TEXT)
+# -----------------------------------------------------------
+
+class MfAmc(Base, TimestampMixin):
+    __tablename__ = "mf_amc"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    # Fund house name (unique)
+    name = Column(String(200), nullable=False, unique=True, index=True)
+
+    # Optional branding
+    logo_url = Column(String(500), nullable=True)
+    website = Column(String(300), nullable=True)
+
+    # Optional metadata
+    incorporation_date = Column(Date, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    # Relationships
+    schemes = relationship("MfScheme", back_populates="amc", lazy="selectin")
+
+    def __repr__(self):
+        return f"<MfAmc id={self.id} name={self.name}>"
+
+
+class MfScheme(Base, TimestampMixin):
+    """
+    Master table (single source of truth)
+    category/sub_category are TEXT (no separate tables)
+    """
+    __tablename__ = "mf_scheme"
+
+    # AMFI / mfapi scheme_code is unique globally
+    scheme_code = Column(BigInteger, primary_key=True)
+
+    amc_id = Column(
+        BigInteger,
+        ForeignKey("mf_amc.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    scheme_name = Column(Text, nullable=False)
+
+    # From mfapi meta (strings)
+    scheme_type = Column(String(120), nullable=True)      # "Open Ended Schemes"
+    category = Column(String(120), nullable=True)         # "Equity Scheme"
+    sub_category = Column(String(200), nullable=True)     # "Large Cap Fund" / "Money Market Fund" etc.
+
+    # Direct/Regular, Growth/IDCW/Bonus (either parsed from name or stored from your parser)
+    plan = Column(String(20), nullable=True)              # DIRECT / REGULAR
+    option = Column(String(20), nullable=True)            # GROWTH / IDCW / BONUS / UNKNOWN
+    frequency = Column(String(20), nullable=True)         # DAILY/WEEKLY/MONTHLY/QUARTERLY/NONE
+    payout_type = Column(String(20), nullable=True)       # PAYOUT/REINVESTMENT/UNKNOWN
+
+    # Cap bucket for equity only (LARGE/MID/SMALL/FLEXI/MULTI/NOT_APPLICABLE)
+    cap_bucket = Column(String(30), nullable=True)
+
+    # ISINs from AMFI/mfapi meta
+    isin_growth = Column(String(20), nullable=True)
+    isin_div_reinvestment = Column(String(20), nullable=True)
+
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    # Relationships
+    amc = relationship("MfAmc", back_populates="schemes", lazy="joined")
+    navs = relationship("MfNavDaily", back_populates="scheme", lazy="selectin")
+    snapshot = relationship("MfSchemeSnapshot", back_populates="scheme", uselist=False, lazy="selectin")
+
+    __table_args__ = (
+        Index("ix_mf_scheme_amc_category", "amc_id", "category"),
+        Index("ix_mf_scheme_filters", "category", "sub_category", "plan", "option"),
+    )
+
+    def __repr__(self):
+        return f"<MfScheme code={self.scheme_code} name={self.scheme_name[:40]}...>"
+
+
+class MfNavDaily(Base, TimestampMixin):
+    """
+    NAV history table
+    PK (scheme_code, nav_date) so duplicate date insert won't happen.
+    """
+    __tablename__ = "mf_nav_daily"
+
+    scheme_code = Column(
+        BigInteger,
+        ForeignKey("mf_scheme.scheme_code", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+
+    nav_date = Column(Date, primary_key=True, nullable=False, index=True)
+
+    nav = Column(Numeric(18, 6), nullable=False)
+
+    # Relationships
+    scheme = relationship("MfScheme", back_populates="navs", lazy="joined")
+
+    __table_args__ = (
+        Index("ix_mf_nav_daily_date", "nav_date"),
+        Index("ix_mf_nav_daily_scheme_date", "scheme_code", "nav_date"),
+    )
+
+    def __repr__(self):
+        return f"<MfNavDaily scheme={self.scheme_code} date={self.nav_date} nav={self.nav}>"
+
+
+class MfSchemeSnapshot(Base, TimestampMixin):
+    """
+    Fast listing cache (one row per scheme)
+    Use this for Groww-style list: latest nav, returns, expense, AUM, etc.
+    """
+    __tablename__ = "mf_scheme_snapshot"
+
+    scheme_code = Column(
+        BigInteger,
+        ForeignKey("mf_scheme.scheme_code", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+
+    as_of_date = Column(Date, nullable=False, index=True)
+
+    latest_nav = Column(Numeric(18, 6), nullable=True)
+
+    # Optional extras for UI (fill when you have data source)
+    aum_cr = Column(Numeric(18, 2), nullable=True)            # fund size in Cr
+    expense_ratio = Column(Numeric(10, 4), nullable=True)     # %
+    risk_level = Column(String(30), nullable=True)            # Low/Moderate/High etc.
+
+    return_1y = Column(Numeric(12, 4), nullable=True)
+    return_3y = Column(Numeric(12, 4), nullable=True)
+    return_5y = Column(Numeric(12, 4), nullable=True)
+
+    # Relationship
+    scheme = relationship("MfScheme", back_populates="snapshot", lazy="joined")
+
+    __table_args__ = (
+        Index("ix_mf_snapshot_date", "as_of_date"),
+    )
+
+    def __repr__(self):
+        return f"<MfSchemeSnapshot scheme={self.scheme_code} as_of={self.as_of_date} nav={self.latest_nav}>"
+
+
+class MfJobLog(Base):
+    __tablename__ = "mf_job_log"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    job_name = Column(String(80), nullable=False, index=True)   # NAV_SYNC / SNAPSHOT_SYNC / AMC_SYNC etc.
+    run_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    status = Column(String(20), nullable=False, index=True)     # SUCCESS / FAILED
+    message = Column(Text, nullable=True)
+
+    # Optional: how many records processed
+    inserted = Column(Integer, nullable=True)
+    updated = Column(Integer, nullable=True)
+    skipped = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ix_mf_joblog_job_run", "job_name", "run_at"),
+    )
+
+    def __repr__(self):
+        return f"<MfJobLog job={self.job_name} status={self.status} at={self.run_at}>"
+
+class PreopenMoversCache(Base):
+    __tablename__ = "preopen_movers_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    index_id = Column(Integer, nullable=False)
+    trade_date = Column(Date, nullable=False)
+
+    # store only essential preopen results
+    limit = Column(Integer, nullable=False, default=50)
+
+    gainers = Column(JSON, nullable=False)  # list[dict]
+    losers = Column(JSON, nullable=False)   # list[dict]
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("uq_preopen_movers_cache", "index_id", "trade_date", "limit", unique=True),
+    )

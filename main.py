@@ -32,6 +32,10 @@ from routes.News import NewsAi
 #testing
 from routes.Missing_Logo import MissingLogo
 
+#mutual fund
+from routes.Mutual_Fund import MutualFund
+from routes.Mutual_Fund import Home_Mf
+
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -133,7 +137,7 @@ app.add_middleware(
 # app.mount("/api/v1/static", StaticFiles(directory="static"), name="static")
 
 # Health check endpoint
-@app.get("/health")
+@app.get("/api/v1/health")
 def health_check():
     try:
         db_status = check_database_connection()
@@ -150,6 +154,10 @@ def health_check():
 try:   
     #testing
     app.include_router(MissingLogo.router, prefix="/api/v1")
+
+    #Mutual fund Home_Mf
+    app.include_router(Home_Mf.router, prefix="/api/v1")
+    app.include_router(MutualFund.router, prefix="/api/v1")
 
     #Service
     app.include_router(Payment_status.router, prefix="/api/v1")
