@@ -29,6 +29,7 @@ NEWS_AI_API=os.getenv("NEWS_AI_API")
 
 CASHFREE_APP_ID=os.getenv("CASHFREE_APP_ID")
 CASHFREE_SECRET_KEY=os.getenv("CASHFREE_SECRET_KEY")
+RAPID_INDIAN_STOCK_EXCHANGE=os.getenv("RAPID_INDIAN_STOCK_EXCHANGE")
 
 class Settings(BaseSettings):
     # SFTP configuration

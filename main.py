@@ -24,6 +24,9 @@ from routes.Cloude_Data import corporateAction, faoOiParticipant, fiidiiTrade, r
 from routes.Cloude_Data.News import news
 from routes.static_proxy import static_proxy
 
+#NSE Detail Data
+from routes.Nse_Stock_Details import Indian_Stock_Exchange_Details
+
 #Service
 from routes.Service.Payment import plan, Payment, Payment_status
 from routes.Service.KYC import Otp_Kyc, Pan_Kyc, Data_Kyc
@@ -181,6 +184,9 @@ try:
     app.include_router(Market_And_Sectors.router, prefix="/api/v1")
     app.include_router(Todays_Stock.router, prefix="/api/v1")
     app.include_router(Top_Marqee.router, prefix="/api/v1")
+
+    #NSE Detail Data
+    app.include_router(Indian_Stock_Exchange_Details.router, prefix="/api/v1")
     
     # Add other routes...
     

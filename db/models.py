@@ -21,6 +21,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import ARRAY
 from db.connection import Base
 from sqlalchemy.sql import expression
+from sqlalchemy.dialects.postgresql import JSONB
 
 def ts_now():
     return func.now()
@@ -640,3 +641,33 @@ class PreopenMoversCache(Base):
     __table_args__ = (
         Index("uq_preopen_movers_cache", "index_id", "trade_date", "limit", unique=True),
     )
+
+
+class StockDetail(Base):
+    __tablename__ = "stock_details"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # ✅ identity
+    symbol = Column(String(32), nullable=False)          # e.g. TATASTEEL / NSE code
+    company_name = Column(String(255), nullable=False)   # e.g. Tata Steel
+    industry = Column(String(120), nullable=True)
+
+    # ✅ snapshot date (one record per day)
+    fetch_date = Column(Date, nullable=False)
+
+    # ✅ full payload
+    data = Column(JSONB, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        # ✅ prevent duplicates per day
+        UniqueConstraint("symbol", "fetch_date", name="uq_stock_details_symbol_fetch_date"),
+        # ✅ indexes for fast filters
+        Index("ix_stock_details_fetch_date", "fetch_date"),
+        Index("ix_stock_details_symbol", "symbol"),
+        Index("ix_stock_details_industry", "industry"),
+    )
+
