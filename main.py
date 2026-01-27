@@ -1,41 +1,44 @@
-from fastapi import FastAPI, Depends, HTTPException, Request
+# main.py (FULL UPDATED FILE)
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from contextlib import asynccontextmanager
 import uvicorn
 import logging
 import os
-from datetime import datetime  # ✅ needed for scheduler job
-from datetime import date
+from datetime import datetime, date
 from pathlib import Path
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from zoneinfo import ZoneInfo
 
 from db.connection import engine, check_database_connection
 from db import models
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-#NSE Data
+from sftp.NSE.sftp_client import SFTPClient
+
+# NSE Data
 from utils.NSE_Formater.data_ingestor import process_cm30_for_date, process_cm30_security_for_date
 from utils.NSE_Formater.bhavcopy_ingestor import process_cm_bhavcopy_for_date
 from fastapi.responses import JSONResponse
-from routes.NSE import Top_Marqee, Todays_Stock, Market_And_Sectors, Preopen_Movers, Most_Traded
+from routes.NSE import Top_Marqee, Todays_Stock, Market_And_Sectors, Preopen_Movers, Most_Traded, Historical_data
 from routes.Cloude_Data import corporateAction, faoOiParticipant, fiidiiTrade, resultCalendar, ipo
 from routes.Cloude_Data.News import news
 from routes.static_proxy import static_proxy
 
-#NSE Detail Data
+# NSE Detail Data
 from routes.Nse_Stock_Details import Indian_Stock_Exchange_Details
 
-#Service
+# Service
 from routes.Service.Payment import plan, Payment, Payment_status
 from routes.Service.KYC import Otp_Kyc, Pan_Kyc, Data_Kyc
 from routes.News import NewsAi
 
-#testing
+# testing
 from routes.Missing_Logo import MissingLogo
 
-#mutual fund
+# mutual fund
 from routes.Mutual_Fund import MutualFund
 from routes.Mutual_Fund import Home_Mf
 
@@ -46,61 +49,142 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-# --------------------------------------------------------
-
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_ROOT = Path(os.getenv("STATIC_ROOT", BASE_DIR / "static")).resolve()
 STATIC_ROOT.mkdir(parents=True, exist_ok=True)
 
-# Global scheduler instance
 scheduler = AsyncIOScheduler()
+IST = ZoneInfo("Asia/Kolkata")
 
+
+# -------------------------------
+# Helpers
+# -------------------------------
+
+def ist_today() -> date:
+    return datetime.now(IST).date()
+
+
+def build_cm30_security_remote_path(trade_date: date) -> str:
+    # /CM30/SECURITY/<MonthDDYYYY>/Securities.dat
+    folder = trade_date.strftime("%B%d%Y")
+    return f"/CM30/SECURITY/{folder}/Securities.dat"
+
+
+def build_bhavcopy_remote_path(trade_date: date) -> str:
+    # /CM/BHAV/cmDDMONYYYYbhav.csv
+    mon = trade_date.strftime("%b").upper()
+    dd = trade_date.strftime("%d")
+    yyyy = trade_date.strftime("%Y")
+    file_name = f"cm{dd}{mon}{yyyy}bhav.csv"
+    return f"/CM/BHAV/{file_name}"
+
+
+def remote_file_ready(remote_path: str, min_bytes: int = 500) -> bool:
+    """
+    ✅ Only run ingestion when file exists AND non-empty on SFTP.
+    Prevents 'empty / not uploaded yet' runs.
+    """
+    sftp = SFTPClient()
+    try:
+        sftp.connect()
+        try:
+            st = sftp.client.stat(remote_path)  # paramiko SFTPClient
+            size = int(getattr(st, "st_size", 0) or 0)
+            if size >= min_bytes:
+                return True
+            logger.info(f"[SFTP-CHECK] {remote_path} exists but too small: {size} bytes")
+            return False
+        except FileNotFoundError:
+            logger.info(f"[SFTP-CHECK] Not found: {remote_path}")
+            return False
+        except Exception as e:
+            logger.warning(f"[SFTP-CHECK] stat failed for {remote_path}: {e}")
+            return False
+    finally:
+        try:
+            sftp.close()
+        except Exception:
+            pass
+
+
+# -------------------------------
+# Scheduler Jobs
+# -------------------------------
 
 def _cm30_job():
-    today = datetime.now().date()
+    """
+    Intraday CM30 folder ingestion (mkt + ind).
+    Runs every 1 minute.
+    """
+    today = ist_today()
     try:
         logger.info(f"[CM30-JOB] Running ingestion for {today}")
-
-        # 1) Pehle securities master load/update
-
-        # 2) Fir intraday mkt + ind data
         process_cm30_for_date(today)
-
     except Exception as e:
         logger.error(f"[CM30-JOB] Error: {e}", exc_info=True)
 
+
 def _bhavcopy_job():
-    today = datetime.now().date()
+    """
+    ✅ Run ONLY when files are actually available on SFTP.
+    - Securities.dat
+    - Bhavcopy CSV
+    """
+    today = ist_today()
+
     try:
-        logger.info(f"[CM-BHAV-JOB] Running bhavcopy ingestion for {today}")
+        sec_path = build_cm30_security_remote_path(today)
+        bhav_path = build_bhavcopy_remote_path(today)
+
+        logger.info(f"[CM-BHAV-JOB] Checking availability for {today}")
+        logger.info(f"[CM-BHAV-JOB] Securities: {sec_path}")
+        logger.info(f"[CM-BHAV-JOB] Bhavcopy  : {bhav_path}")
+
+        sec_ready = remote_file_ready(sec_path, min_bytes=2000)   # securities.dat usually larger
+        bhav_ready = remote_file_ready(bhav_path, min_bytes=500)  # csv non-empty
+
+        if not sec_ready:
+            logger.info("[CM-BHAV-JOB] Skip: Securities.dat not ready yet.")
+            return
+
+        if not bhav_ready:
+            logger.info("[CM-BHAV-JOB] Skip: Bhavcopy CSV not ready yet.")
+            return
+
+        logger.info(f"[CM-BHAV-JOB] ✅ Files ready. Running ingestion for {today}")
+
         process_cm30_security_for_date(today)
         process_cm_bhavcopy_for_date(today)
+
     except Exception as e:
         logger.error(f"[CM-BHAV-JOB] Error: {e}", exc_info=True)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Starting CRM Backend...")
 
     try:
-        # Cache init
         FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
         logger.info("✅ Cache initialized")
 
-        # DB connection check
         if not check_database_connection():
             raise Exception("Database connection failed")
         logger.info("✅ Database connection verified")
 
-        # Tables
         models.Base.metadata.create_all(bind=engine, checkfirst=True)
         logger.info("✅ DB tables created/verified")
 
-        # Scheduler job setup
+        # ✅ CM30 every minute
         scheduler.add_job(_cm30_job, "interval", minutes=1)
-        scheduler.add_job(_bhavcopy_job, "cron", hour=18, minute=45)  
+
+        # ✅ Bhavcopy check every 10 minutes (better than fixed 18:45)
+        # Because file upload timing can vary day-to-day.
+        scheduler.add_job(_bhavcopy_job, "interval", minutes=10)
+
         scheduler.start()
-        logger.info("✅ CM30 scheduler started (every 1 minute)")
+        logger.info("✅ Scheduler started (CM30:1m, BHAV:10m-check)")
 
         logger.info("🎉 Startup complete.")
 
@@ -108,11 +192,9 @@ async def lifespan(app: FastAPI):
         logger.error("❌ Startup failed: %s", e, exc_info=True)
         raise
 
-    # -------- app is running here --------
     try:
         yield
     finally:
-        # Shutdown hooks
         try:
             if scheduler.running:
                 scheduler.shutdown(wait=False)
@@ -137,9 +219,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# app.mount("/api/v1/static", StaticFiles(directory="static"), name="static")
 
-# Health check endpoint
 @app.get("/api/v1/health")
 def health_check():
     try:
@@ -153,16 +233,17 @@ def health_check():
         logger.error(f"Health check failed: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail="Service unhealthy")
 
-# Register all your existing routes
-try:   
-    #testing
+
+# Register routers
+try:
+    # testing
     app.include_router(MissingLogo.router, prefix="/api/v1")
 
-    #Mutual fund Home_Mf
+    # Mutual fund
     app.include_router(Home_Mf.router, prefix="/api/v1")
     app.include_router(MutualFund.router, prefix="/api/v1")
 
-    #Service
+    # Service
     app.include_router(Payment_status.router, prefix="/api/v1")
     app.include_router(NewsAi.router, prefix="/api/v1")
     app.include_router(Pan_Kyc.router, prefix="/api/v1")
@@ -170,8 +251,9 @@ try:
     app.include_router(Otp_Kyc.router, prefix="/api/v1")
     app.include_router(Payment.router, prefix="/api/v1")
     app.include_router(plan.router, prefix="/api/v1")
-  
-    #NSE Data
+
+    # NSE Data
+    app.include_router(Historical_data.router, prefix="/api/v1")
     app.include_router(static_proxy.router, prefix="/api/v1")
     app.include_router(news.router, prefix="/api/v1")
     app.include_router(ipo.router, prefix="/api/v1")
@@ -185,16 +267,14 @@ try:
     app.include_router(Todays_Stock.router, prefix="/api/v1")
     app.include_router(Top_Marqee.router, prefix="/api/v1")
 
-    #NSE Detail Data
+    # NSE Detail Data
     app.include_router(Indian_Stock_Exchange_Details.router, prefix="/api/v1")
-    
-    # Add other routes...
-    
+
 except Exception as e:
-    logger.error(f"Failed to register routes: {e}")
+    logger.error(f"Failed to register routes: {e}", exc_info=True)
     raise
 
-# Global exception handler
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Global exception: {exc}", exc_info=True)
@@ -202,12 +282,11 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={
             "error": "Internal server error",
-            "detail": str(exc),  # agar chaho to yahan prod me generic msg rakho
+            "detail": str(exc),
         },
     )
 
 
-# Run the application
 if __name__ == "__main__":
     logger.info("🚀 Starting server with Uvicorn...")
     uvicorn.run(

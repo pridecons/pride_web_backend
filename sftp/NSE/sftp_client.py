@@ -112,3 +112,21 @@ class SFTPClient:
             except:
                 pass
         logger.info("SFTP connection closed")
+
+    def exists(self, remote_path: str) -> bool:
+        """
+        Check if a remote file/folder exists on SFTP.
+        """
+        self.connect()
+        try:
+            self.client.stat(remote_path)
+            return True
+        except FileNotFoundError:
+            return False
+        except IOError:
+            # some servers raise IOError for missing
+            return False
+        except Exception as e:
+            logger.warning(f"exists() failed for {remote_path}: {e}")
+            return False
+

@@ -21,6 +21,7 @@ from db.models import (
 from sftp.NSE.sftp_client import SFTPClient
 from utils.NSE_Formater.parser import parse_mkt, parse_ind
 from utils.NSE_Formater.security_format import SecuritiesConverter
+from datetime import timezone
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -409,8 +410,7 @@ def process_cm30_mkt_folder(remote_dir: str) -> None:
             # Insert intraday bars (no duplicate protection here; file-level log prevents duplicates)
             bars = []
             for r in records:
-                ts_utc = datetime.fromtimestamp(r["timestamp"])
-                ts_ist = ts_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(IST)
+                ts_ist = datetime.fromtimestamp(int(r["timestamp"]), tz=timezone.utc).astimezone(IST)
 
                 total_traded_qty = int(r.get("total_traded_quantity") or 0)
                 interval_traded_qty = int(r.get("interval_total_traded_quantity") or 0)
@@ -545,8 +545,7 @@ def process_cm30_ind_folder(remote_dir: str) -> None:
 
             rows = []
             for r in records:
-                ts_utc = datetime.fromtimestamp(r["timestamp"])
-                ts_ist = ts_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(IST)
+                ts_ist = datetime.fromtimestamp(int(r["timestamp"]), tz=timezone.utc).astimezone(IST)
 
                 index_token = int(r.get("index_token") or 0)
 
