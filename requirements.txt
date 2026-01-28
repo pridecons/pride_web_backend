@@ -14,7 +14,7 @@ pandas
 boto3
 pydantic>=2.7,<3.0
 eventregistry
-
+'pydantic[email]'
 redis 
 orjson 
 httpx 
