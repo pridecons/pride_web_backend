@@ -1,0 +1,338 @@
+{
+  "Equity Cash": [
+    {
+      "name": "RELIANCE",
+      "symbol": "RELIANCE-EQ",
+      "token": "2885"
+    },
+    {
+      "name": "HDFCBANK",
+      "symbol": "HDFCBANK-EQ",
+      "token": "1333"
+    },
+    {
+      "name": "ICICIBANK",
+      "symbol": "ICICIBANK-EQ",
+      "token": "4963"
+    },
+    {
+      "name": "SBIN",
+      "symbol": "SBIN-EQ",
+      "token": "3045"
+    },
+    {
+      "name": "ITC",
+      "symbol": "ITC-EQ",
+      "token": "1660"
+    },
+    {
+      "name": "INFY",
+      "symbol": "INFY-EQ",
+      "token": "1594"
+    },
+    {
+      "name": "TCS",
+      "symbol": "TCS-EQ",
+      "token": "11536"
+    },
+    {
+      "name": "LT",
+      "symbol": "LT-EQ",
+      "token": "11483"
+    },
+    {
+      "name": "AXISBANK",
+      "symbol": "AXISBANK-EQ",
+      "token": "5900"
+    },
+    {
+      "name": "KOTAKBANK",
+      "symbol": "KOTAKBANK-EQ",
+      "token": "1922"
+    },
+    {
+      "name": "TATASTEEL",
+      "symbol": "TATASTEEL-EQ",
+      "token": "3499"
+    },
+    {
+      "name": "ONGC",
+      "symbol": "ONGC-EQ",
+      "token": "2475"
+    },
+    {
+      "name": "BPCL",
+      "symbol": "BPCL-EQ",
+      "token": "526"
+    },
+    {
+      "name": "BEL",
+      "symbol": "BEL-EQ",
+      "token": "383"
+    },
+    {
+      "name": "JIOFIN",
+      "symbol": "JIOFIN-EQ",
+      "token": "18143"
+    }
+  ],
+  "Stock Future": [
+    {
+      "name": "HDFCBANK",
+      "symbol": "HDFCBANK-EQ",
+      "token": "1333"
+    },
+    {
+      "name": "JIOFIN",
+      "symbol": "JIOFIN-EQ",
+      "token": "18143"
+    },
+    {
+      "name": "TATASTEEL",
+      "symbol": "TATASTEEL-EQ",
+      "token": "3499"
+    },
+    {
+      "name": "UNIONBANK",
+      "symbol": "UNIONBANK-EQ",
+      "token": "10753"
+    },
+    {
+      "name": "SBIN",
+      "symbol": "SBIN-EQ",
+      "token": "3045"
+    },
+    {
+      "name": "RELIANCE",
+      "symbol": "RELIANCE-EQ",
+      "token": "2885"
+    },
+    {
+      "name": "ICICIBANK",
+      "symbol": "ICICIBANK-EQ",
+      "token": "4963"
+    },
+    {
+      "name": "INFY",
+      "symbol": "INFY-EQ",
+      "token": "1594"
+    },
+    {
+      "name": "BPCL",
+      "symbol": "BPCL-EQ",
+      "token": "526"
+    },
+    {
+      "name": "AXISBANK",
+      "symbol": "AXISBANK-EQ",
+      "token": "5900"
+    },
+    {
+      "name": "KOTAKBANK",
+      "symbol": "KOTAKBANK-EQ",
+      "token": "1922"
+    },
+    {
+      "name": "ONGC",
+      "symbol": "ONGC-EQ",
+      "token": "2475"
+    },
+    {
+      "name": "ITC",
+      "symbol": "ITC-EQ",
+      "token": "1660"
+    },
+    {
+      "name": "TCS",
+      "symbol": "TCS-EQ",
+      "token": "11536"
+    },
+    {
+      "name": "LT",
+      "symbol": "LT-EQ",
+      "token": "11483"
+    }
+  ],
+  "Stock Option": [
+    {
+      "name": "RELIANCE",
+      "symbol": "RELIANCE-EQ",
+      "token": "2885"
+    },
+    {
+      "name": "HDFCBANK",
+      "symbol": "HDFCBANK-EQ",
+      "token": "1333"
+    },
+    {
+      "name": "ICICIBANK",
+      "symbol": "ICICIBANK-EQ",
+      "token": "4963"
+    },
+    {
+      "name": "SBIN",
+      "symbol": "SBIN-EQ",
+      "token": "3045"
+    },
+    {
+      "name": "TATASTEEL",
+      "symbol": "TATASTEEL-EQ",
+      "token": "3499"
+    },
+    {
+      "name": "INFY",
+      "symbol": "INFY-EQ",
+      "token": "1594"
+    },
+    {
+      "name": "TCS",
+      "symbol": "TCS-EQ",
+      "token": "11536"
+    },
+    {
+      "name": "BPCL",
+      "symbol": "BPCL-EQ",
+      "token": "526"
+    },
+    {
+      "name": "ONGC",
+      "symbol": "ONGC-EQ",
+      "token": "2475"
+    },
+    {
+      "name": "ITC",
+      "symbol": "ITC-EQ",
+      "token": "1660"
+    },
+    {
+      "name": "AXISBANK",
+      "symbol": "AXISBANK-EQ",
+      "token": "5900"
+    },
+    {
+      "name": "KOTAKBANK",
+      "symbol": "KOTAKBANK-EQ",
+      "token": "1922"
+    },
+    {
+      "name": "LT",
+      "symbol": "LT-EQ",
+      "token": "11483"
+    },
+    {
+      "name": "BEL",
+      "symbol": "BEL-EQ",
+      "token": "383"
+    },
+    {
+      "name": "JIOFIN",
+      "symbol": "JIOFIN-EQ",
+      "token": "18143"
+    }
+  ],
+  "Index Future": [
+    {
+      "name": "NIFTY",
+      "symbol": "Nifty 50",
+      "token": "99926000"
+    },
+    {
+      "name": "BANKNIFTY",
+      "symbol": "Nifty Bank",
+      "token": "99926009"
+    },
+    {
+      "name": "FINNIFTY",
+      "symbol": "Nifty Fin Service",
+      "token": "99926037"
+    },
+    {
+      "name": "MIDCPNIFTY",
+      "symbol": "NIFTY MID SELECT",
+      "token": "99926074"
+    }
+  ],
+  "Index Option": [
+    {
+      "name": "BANKNIFTY",
+      "symbol": "Nifty Bank",
+      "token": "99926009"
+    },
+    {
+      "name": "NIFTY",
+      "symbol": "Nifty 50",
+      "token": "99926000"
+    },
+    {
+      "name": "FINNIFTY",
+      "symbol": "Nifty Fin Service",
+      "token": "99926037"
+    },
+    {
+      "name": "MIDCPNIFTY",
+      "symbol": "NIFTY MID SELECT",
+      "token": "99926074"
+    }
+  ],
+  "MCX Bullion": [
+    {
+      "name": "GOLD",
+      "symbol": "GOLD26FEBFUT",
+      "token": "125230"
+    },
+    {
+      "name": "GOLDM",
+      "symbol": "GOLDM26FEBFUT",
+      "token": "124396"
+    },
+    {
+      "name": "SILVER",
+      "symbol": "SILVER26MARFUT",
+      "token": "123007"
+    },
+    {
+      "name": "SILVERM",
+      "symbol": "SILVERM26JANFUT",
+      "token": "122124"
+    }
+  ],
+  "MCX Energy": [
+    {
+      "name": "CRUDEOIL",
+      "symbol": "CRUDEOIL26JANFUT",
+      "token": "128804"
+    },
+    {
+      "name": "NATURALGAS",
+      "symbol": "NATURALGAS26JANFUT",
+      "token": "121605"
+    }
+  ],
+  "MCX Base Metal": [
+    {
+      "name": "COPPER",
+      "symbol": "COPPER26JANFUT",
+      "token": "122166"
+    },
+    {
+      "name": "ZINC",
+      "symbol": "ZINC26JANFUT",
+      "token": "122196"
+    },
+    {
+      "name": "ALUMINIUM",
+      "symbol": "ALUMINIUM26JANFUT",
+      "token": "122165"
+    },
+    {
+      "name": "LEAD",
+      "symbol": "LEAD26JANFUT",
+      "token": "122174"
+    },
+    {
+      "name": "NICKEL",
+      "symbol": "NICKEL26JANFUT",
+      "token": "122190"
+    }
+  ]
+}

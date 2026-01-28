@@ -31,6 +31,12 @@ CASHFREE_APP_ID=os.getenv("CASHFREE_APP_ID")
 CASHFREE_SECRET_KEY=os.getenv("CASHFREE_SECRET_KEY")
 RAPID_INDIAN_STOCK_EXCHANGE=os.getenv("RAPID_INDIAN_STOCK_EXCHANGE")
 
+ANGEL_API_KEY= "1q65DSNZ"
+ANGEL_SECRET_KEY = "a9961bd7-e2ac-4ebb-8abf-cd4c40a4ddd8"
+ANGEL_CLIENT_ID = "D403666"
+ANGEL_TOTP_KEY="FE6FEUP3HYZFV6OC5S73OFCQUI"
+ANGEL_CLIENT_PIN=2580
+
 class Settings(BaseSettings):
     # SFTP configuration
     # SFTP_HOSTS: list[str] = ['snapshotsftp1.nseindia.com', 'snapshotsftp2.nseindia.com']

@@ -13,6 +13,8 @@ from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from zoneinfo import ZoneInfo
 
+from fastapi.responses import JSONResponse
+
 from db.connection import engine, check_database_connection
 from db import models
 
@@ -21,7 +23,7 @@ from sftp.NSE.sftp_client import SFTPClient
 # NSE Data
 from utils.NSE_Formater.data_ingestor import process_cm30_for_date, process_cm30_security_for_date
 from utils.NSE_Formater.bhavcopy_ingestor import process_cm_bhavcopy_for_date
-from fastapi.responses import JSONResponse
+
 from routes.NSE import Top_Marqee, Todays_Stock, Market_And_Sectors, Preopen_Movers, Most_Traded, Historical_data
 from routes.Cloude_Data import corporateAction, faoOiParticipant, fiidiiTrade, resultCalendar, ipo
 from routes.Cloude_Data.News import news
@@ -45,6 +47,9 @@ from routes.Mutual_Fund import Home_Mf
 # SEO
 from routes.SEO import Seo_Keyword
 
+# Angel One Market Movement (LIVE)
+from routes.ANGEL_ONE import live_server  # includes router + start_background_producer
+
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -63,7 +68,6 @@ IST = ZoneInfo("Asia/Kolkata")
 # -------------------------------
 # Helpers
 # -------------------------------
-
 def ist_today() -> date:
     return datetime.now(IST).date()
 
@@ -114,10 +118,9 @@ def remote_file_ready(remote_path: str, min_bytes: int = 500) -> bool:
 # -------------------------------
 # Scheduler Jobs
 # -------------------------------
-
 def _cm30_job():
     """
-    Intraday CM30 folder ingestion (mkt + ind).
+    Intraday CM30 folder ingestion.
     Runs every 1 minute.
     """
     today = ist_today()
@@ -144,7 +147,7 @@ def _bhavcopy_job():
         logger.info(f"[CM-BHAV-JOB] Securities: {sec_path}")
         logger.info(f"[CM-BHAV-JOB] Bhavcopy  : {bhav_path}")
 
-        sec_ready = remote_file_ready(sec_path, min_bytes=2000)   # securities.dat usually larger
+        sec_ready = remote_file_ready(sec_path, min_bytes=2000)  # securities.dat usually larger
         bhav_ready = remote_file_ready(bhav_path, min_bytes=500)  # csv non-empty
 
         if not sec_ready:
@@ -164,9 +167,12 @@ def _bhavcopy_job():
         logger.error(f"[CM-BHAV-JOB] Error: {e}", exc_info=True)
 
 
+# -------------------------------
+# Lifespan
+# -------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 Starting CRM Backend...")
+    logger.info("🚀 Starting Backend...")
 
     try:
         FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
@@ -180,14 +186,33 @@ async def lifespan(app: FastAPI):
         logger.info("✅ DB tables created/verified")
 
         # ✅ CM30 every minute
-        # scheduler.add_job(_cm30_job, "interval", minutes=1)
+        scheduler.add_job(_cm30_job, "interval", minutes=1)
 
         # ✅ Bhavcopy check every 10 minutes (better than fixed 18:45)
         # Because file upload timing can vary day-to-day.
-        # scheduler.add_job(_bhavcopy_job, "interval", minutes=10)
+        scheduler.add_job(_bhavcopy_job, "interval", minutes=10)
 
         scheduler.start()
-        logger.info("✅ Scheduler started (CM30:1m, BHAV:10m-check)")
+        logger.info("✅ Scheduler started")
+
+        # ✅ ANGEL ONE LIVE PRODUCER (multi-worker safe)
+        # Only ONE worker becomes leader and publishes snapshots to Redis;
+        # All workers can serve SSE and all clients see identical snapshots.
+        try:
+            live_server.start_background_producer(
+                refresh_sec=int(os.getenv("ANGEL_REFRESH_SEC", "5")),
+                stocklist_path=os.getenv("ANGEL_STOCKLIST_PATH", "routes/ANGEL_ONE/stockList.json"),
+                tokens_path=os.getenv("ANGEL_TOKENS_PATH", "tokens.json"),
+                interval_30m=os.getenv("ANGEL_INTERVAL_30M", "THIRTY_MINUTE"),
+                interval_day=os.getenv("ANGEL_INTERVAL_DAY", "ONE_DAY"),
+                lookback_days_30m=int(os.getenv("ANGEL_LOOKBACK_30M_DAYS", "60")),
+                lookback_days_day=int(os.getenv("ANGEL_LOOKBACK_DAY_DAYS", "520")),
+                candle_concurrency=int(os.getenv("ANGEL_CANDLE_CONCURRENCY", "15")),
+            )
+            logger.info("✅ Angel One live producer started (leader-lock enabled)")
+        except Exception as e:
+            # don't fail whole app if redis is down; you can still use /signals/once
+            logger.error(f"❌ Angel One producer start failed: {e}", exc_info=True)
 
         logger.info("🎉 Startup complete.")
 
@@ -208,6 +233,9 @@ async def lifespan(app: FastAPI):
         logger.info("🛑 Backend shutdown complete.")
 
 
+# -------------------------------
+# App
+# -------------------------------
 app = FastAPI(
     title="CRM Backend API",
     version="1.0.0",
@@ -237,7 +265,9 @@ def health_check():
         raise HTTPException(status_code=503, detail="Service unhealthy")
 
 
+# -------------------------------
 # Register routers
+# -------------------------------
 try:
     # SEO
     app.include_router(Seo_Keyword.router, prefix="/api/v1")
@@ -276,11 +306,17 @@ try:
     # NSE Detail Data
     app.include_router(Indian_Stock_Exchange_Details.router, prefix="/api/v1")
 
+    # ✅ Angel One Live (SSE)
+    app.include_router(live_server.router, prefix="/api/v1")
+
 except Exception as e:
     logger.error(f"Failed to register routes: {e}", exc_info=True)
     raise
 
 
+# -------------------------------
+# Exception handler
+# -------------------------------
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Global exception: {exc}", exc_info=True)
@@ -293,14 +329,17 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+# -------------------------------
+# Run
+# -------------------------------
 if __name__ == "__main__":
     logger.info("🚀 Starting server with Uvicorn...")
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=int(os.getenv("PORT", "8000")),
         reload=True,
-        log_level="info",
+        log_level=os.getenv("LOG_LEVEL", "info").lower(),
         reload_excludes=[
             "static/*",
             "vbc_token_cache/*",
