@@ -19,3 +19,5 @@ redis
 orjson 
 httpx 
 uvloop
+sse-starlette
+pyotp
