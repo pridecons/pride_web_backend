@@ -671,3 +671,28 @@ class StockDetail(Base):
         Index("ix_stock_details_industry", "industry"),
     )
 
+class SEOKeyword(Base):
+    __tablename__ = "seo_keyword"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # ✅ identity
+    symbol = Column(String(32), nullable=False)          # e.g. TATASTEEL / NSE code
+    company_name = Column(String(255), nullable=False)  
+
+    # ✅ snapshot date (one record per day)
+    fetch_date = Column(Date, nullable=False)
+
+    # ✅ full payload
+    data = Column(JSONB, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    __table_args__ = (
+        # ✅ prevent duplicates per day
+        UniqueConstraint("symbol", "fetch_date", name="uq_seo_keyword_symbol_fetch_date"),
+        # ✅ indexes for fast filters
+        Index("ix_seo_keyword_fetch_date", "fetch_date"),
+        Index("ix_seo_keyword_symbol", "symbol"),
+    )
+

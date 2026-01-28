@@ -42,6 +42,9 @@ from routes.Missing_Logo import MissingLogo
 from routes.Mutual_Fund import MutualFund
 from routes.Mutual_Fund import Home_Mf
 
+# SEO
+from routes.SEO import Seo_Keyword
+
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -177,11 +180,11 @@ async def lifespan(app: FastAPI):
         logger.info("✅ DB tables created/verified")
 
         # ✅ CM30 every minute
-        scheduler.add_job(_cm30_job, "interval", minutes=1)
+        # scheduler.add_job(_cm30_job, "interval", minutes=1)
 
         # ✅ Bhavcopy check every 10 minutes (better than fixed 18:45)
         # Because file upload timing can vary day-to-day.
-        scheduler.add_job(_bhavcopy_job, "interval", minutes=10)
+        # scheduler.add_job(_bhavcopy_job, "interval", minutes=10)
 
         scheduler.start()
         logger.info("✅ Scheduler started (CM30:1m, BHAV:10m-check)")
@@ -236,6 +239,9 @@ def health_check():
 
 # Register routers
 try:
+    # SEO
+    app.include_router(Seo_Keyword.router, prefix="/api/v1")
+
     # testing
     app.include_router(MissingLogo.router, prefix="/api/v1")
 
