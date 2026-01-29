@@ -50,8 +50,8 @@ from routes.Mutual_Fund import Home_Mf
 from routes.SEO import Seo_Keyword
 
 # Angel One Market Movement (LIVE)
-# from routes.AngelOne import live_server  # includes router + start_background_producer
-# from routes.AngelOne.angel_login import login_and_get_token  
+from routes.AngelOne import live_server  # includes router + start_background_producer
+from routes.AngelOne.angel_login import login_and_get_token  
 
 
 logging.basicConfig(
@@ -206,19 +206,19 @@ async def lifespan(app: FastAPI):
         # Only ONE worker becomes leader and publishes snapshots to Redis;
         # All workers can serve SSE and all clients see identical snapshots.
         try:
-            # live_server.start_background_producer(
-            #     fast_refresh_sec=2,     # ✅ live LTP updates fast
-            #     heavy_refresh_sec=60,   # ✅ indicators refresh
-            #     stocklist_path="routes/AngelOne/stockList.json",
-            #     tokens_path="tokens.json",
-            #     interval_30m="THIRTY_MINUTE",
-            #     interval_day="ONE_DAY",
-            #     lookback_days_30m=60,
-            #     lookback_days_day=520,
-            #     quote_chunk_size=50,
-            #     quote_sleep_s=0.2,
-            #     candle_concurrency=15,
-            # )
+            live_server.start_background_producer(
+                fast_refresh_sec=2,     # ✅ live LTP updates fast
+                heavy_refresh_sec=60,   # ✅ indicators refresh
+                stocklist_path="routes/AngelOne/stockList.json",
+                tokens_path="tokens.json",
+                interval_30m="THIRTY_MINUTE",
+                interval_day="ONE_DAY",
+                lookback_days_30m=60,
+                lookback_days_day=520,
+                quote_chunk_size=50,
+                quote_sleep_s=0.2,
+                candle_concurrency=15,
+            )
             logger.info("✅ Angel One live producer started (leader-lock enabled)")
         except Exception as e:
             # don't fail whole app if redis is down; you can still use /signals/once
@@ -317,7 +317,7 @@ try:
     app.include_router(Indian_Stock_Exchange_Details.router, prefix="/api/v1")
 
     # ✅ Angel One Live (SSE)
-    # app.include_router(live_server.router, prefix="/api/v1")
+    app.include_router(live_server.router, prefix="/api/v1")
 
 except Exception as e:
     logger.error(f"Failed to register routes: {e}", exc_info=True)
