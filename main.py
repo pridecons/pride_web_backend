@@ -196,8 +196,8 @@ async def lifespan(app: FastAPI):
             # Because file upload timing can vary day-to-day.
             scheduler.add_job(_bhavcopy_job, "interval", minutes=10)
 
-        # login_and_get_token()  # one-time at startup
-        # scheduler.add_job(login_and_get_token, "interval", hours=6)
+        login_and_get_token()  # one-time at startup
+        scheduler.add_job(login_and_get_token, "interval", hours=6)
 
         scheduler.start()
         logger.info("✅ Scheduler started")

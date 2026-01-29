@@ -54,6 +54,8 @@ htmlcov/
 *.sublime-workspace
 *.sublime-project
 
+tokens.json
+
 # ---- Others (Optional) ----
 # You can exclude the following if you store them in your repo:
 # poetry.lock
