@@ -1,4 +1,4 @@
-# routes/Angel_One/angel_data.py
+# routes/AngelOne/angel_data.py
 import json
 import socket
 import uuid
@@ -7,7 +7,7 @@ import random
 import requests
 from typing import Dict, Any, List, Optional
 
-from routes.Angel_One.angel_login import login_and_get_token  # must refresh tokens.json
+from routes.AngelOne.angel_login import login_and_get_token  # must refresh tokens.json
 from config import ANGEL_API_KEY
 
 QUOTE_URL = "https://apiconnect.angelbroking.com/rest/secure/angelbroking/market/v1/quote/"

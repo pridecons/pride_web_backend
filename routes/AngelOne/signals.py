@@ -1,4 +1,4 @@
-# routes/Angel_One/signals.py
+# routes/AngelOne/signals.py
 import json
 import time
 from datetime import datetime, timedelta
@@ -6,8 +6,8 @@ from typing import Dict, Any, List, Tuple, Optional
 
 import pandas as pd
 
-from routes.Angel_One.angel_data import load_json, quote_full_bulk, get_candles
-from routes.Angel_One.indicators import compute_indicators
+from routes.AngelOne.angel_data import load_json, quote_full_bulk, get_candles
+from routes.AngelOne.indicators import compute_indicators
 
 
 def save_json(path: str, data: Any) -> None:
@@ -15,10 +15,10 @@ def save_json(path: str, data: Any) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def load_stocklist(path: str = "routes/Angel_One/stockList.json") -> Dict[str, List[Dict[str, Any]]]:
+def load_stocklist(path: str = "routes/AngelOne/stockList.json") -> Dict[str, List[Dict[str, Any]]]:
     data = load_json(path)
     if not isinstance(data, dict):
-        raise ValueError("routes/Angel_One/stockList.json must be an object with categories as keys.")
+        raise ValueError("routes/AngelOne/stockList.json must be an object with categories as keys.")
     return data
 
 
@@ -269,7 +269,7 @@ def score_signal(quote_row: Dict[str, Any], ind: Dict[str, Any]) -> Dict[str, An
 
 
 def main(
-    stocklist_path: str = "routes/Angel_One/stockList.json",
+    stocklist_path: str = "routes/AngelOne/stockList.json",
     tokens_path: str = "tokens.json",
     interval_30m: str = "THIRTY_MINUTE",
     interval_day: str = "ONE_DAY",
@@ -367,7 +367,7 @@ def main(
 
 if __name__ == "__main__":
     res = main(
-        stocklist_path="routes/Angel_One/stockList.json",
+        stocklist_path="routes/AngelOne/stockList.json",
         tokens_path="tokens.json",
         interval_30m="THIRTY_MINUTE",
         interval_day="ONE_DAY",

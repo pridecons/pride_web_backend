@@ -50,8 +50,8 @@ from routes.Mutual_Fund import Home_Mf
 from routes.SEO import Seo_Keyword
 
 # Angel One Market Movement (LIVE)
-# from routes.Angel_One import live_server  # includes router + start_background_producer
-# from routes.Angel_One.angel_login import login_and_get_token  
+# from routes.AngelOne import live_server  # includes router + start_background_producer
+# from routes.AngelOne.angel_login import login_and_get_token  
 
 
 logging.basicConfig(
@@ -209,7 +209,7 @@ async def lifespan(app: FastAPI):
             # live_server.start_background_producer(
             #     fast_refresh_sec=2,     # ✅ live LTP updates fast
             #     heavy_refresh_sec=60,   # ✅ indicators refresh
-            #     stocklist_path="routes/Angel_One/stockList.json",
+            #     stocklist_path="routes/AngelOne/stockList.json",
             #     tokens_path="tokens.json",
             #     interval_30m="THIRTY_MINUTE",
             #     interval_day="ONE_DAY",

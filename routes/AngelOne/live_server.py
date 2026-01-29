@@ -11,7 +11,7 @@ from sse_starlette.sse import EventSourceResponse
 import redis.asyncio as redis
 
 # ✅ Heavy snapshot builder (candles + indicators)
-from routes.Angel_One.signals import (
+from routes.AngelOne.signals import (
     main as build_signals,
     load_stocklist,
     flatten_stocklist,
@@ -21,7 +21,7 @@ from routes.Angel_One.signals import (
 )
 
 # ✅ Quote API (FAST)
-from routes.Angel_One.angel_data import quote_full_bulk
+from routes.AngelOne.angel_data import quote_full_bulk
 
 router = APIRouter(tags=["Angel One Live Signals"])
 
@@ -113,7 +113,7 @@ def start_background_producer(
     fast_refresh_sec: int = 3,
     # ✅ Heavy refresh (candles+indicators)
     heavy_refresh_sec: int = 60,
-    stocklist_path: str = "routes/Angel_One/stockList.json",
+    stocklist_path: str = "routes/AngelOne/stockList.json",
     tokens_path: str = "tokens.json",
     interval_30m: str = "THIRTY_MINUTE",
     interval_day: str = "ONE_DAY",
@@ -306,7 +306,7 @@ def signals_once():
     Heavy one-shot (debug)
     """
     res = build_signals(
-        stocklist_path="routes/Angel_One/stockList.json",
+        stocklist_path="routes/AngelOne/stockList.json",
         tokens_path="tokens.json",
         interval_30m="THIRTY_MINUTE",
         interval_day="ONE_DAY",
