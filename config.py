@@ -37,6 +37,8 @@ ANGEL_CLIENT_ID = "D403666"
 ANGEL_TOTP_KEY="FE6FEUP3HYZFV6OC5S73OFCQUI"
 ANGEL_CLIENT_PIN=2580
 
+LIVE_DATA_FETCH = os.getenv("LIVE_DATA_FETCH", "false").strip().lower() in ("1", "true", "yes", "y", "on")
+
 class Settings(BaseSettings):
     # SFTP configuration
     # SFTP_HOSTS: list[str] = ['snapshotsftp1.nseindia.com', 'snapshotsftp2.nseindia.com']

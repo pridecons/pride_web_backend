@@ -1,4 +1,4 @@
-# routes/ANGEL_ONE/indicators.py
+# routes/Angel_One/indicators.py
 import numpy as np
 import pandas as pd
 from typing import Dict, Any

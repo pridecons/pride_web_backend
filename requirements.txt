@@ -18,6 +18,5 @@ pydantic[email]
 redis 
 orjson 
 httpx 
-uvloop
 sse-starlette
 pyotp

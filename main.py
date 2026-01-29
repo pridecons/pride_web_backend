@@ -20,6 +20,8 @@ from db import models
 
 from sftp.NSE.sftp_client import SFTPClient
 
+from config import LIVE_DATA_FETCH
+
 # NSE Data
 from utils.NSE_Formater.data_ingestor import process_cm30_for_date, process_cm30_security_for_date
 from utils.NSE_Formater.bhavcopy_ingestor import process_cm_bhavcopy_for_date
@@ -48,7 +50,8 @@ from routes.Mutual_Fund import Home_Mf
 from routes.SEO import Seo_Keyword
 
 # Angel One Market Movement (LIVE)
-from routes.ANGEL_ONE import live_server  # includes router + start_background_producer
+# from routes.Angel_One import live_server  # includes router + start_background_producer
+# from routes.Angel_One.angel_login import login_and_get_token  
 
 
 logging.basicConfig(
@@ -185,12 +188,16 @@ async def lifespan(app: FastAPI):
         models.Base.metadata.create_all(bind=engine, checkfirst=True)
         logger.info("✅ DB tables created/verified")
 
-        # ✅ CM30 every minute
-        scheduler.add_job(_cm30_job, "interval", minutes=1)
+        if LIVE_DATA_FETCH:
+            # ✅ CM30 every minute
+            scheduler.add_job(_cm30_job, "interval", minutes=1)
 
-        # ✅ Bhavcopy check every 10 minutes (better than fixed 18:45)
-        # Because file upload timing can vary day-to-day.
-        scheduler.add_job(_bhavcopy_job, "interval", minutes=10)
+            # ✅ Bhavcopy check every 10 minutes (better than fixed 18:45)
+            # Because file upload timing can vary day-to-day.
+            scheduler.add_job(_bhavcopy_job, "interval", minutes=10)
+
+        # login_and_get_token()  # one-time at startup
+        # scheduler.add_job(login_and_get_token, "interval", hours=6)
 
         scheduler.start()
         logger.info("✅ Scheduler started")
@@ -198,21 +205,21 @@ async def lifespan(app: FastAPI):
         # ✅ ANGEL ONE LIVE PRODUCER (multi-worker safe)
         # Only ONE worker becomes leader and publishes snapshots to Redis;
         # All workers can serve SSE and all clients see identical snapshots.
-        try:
-            live_server.start_background_producer(
-                refresh_sec=int(os.getenv("ANGEL_REFRESH_SEC", "5")),
-                stocklist_path=os.getenv("ANGEL_STOCKLIST_PATH", "routes/ANGEL_ONE/stockList.json"),
-                tokens_path=os.getenv("ANGEL_TOKENS_PATH", "tokens.json"),
-                interval_30m=os.getenv("ANGEL_INTERVAL_30M", "THIRTY_MINUTE"),
-                interval_day=os.getenv("ANGEL_INTERVAL_DAY", "ONE_DAY"),
-                lookback_days_30m=int(os.getenv("ANGEL_LOOKBACK_30M_DAYS", "60")),
-                lookback_days_day=int(os.getenv("ANGEL_LOOKBACK_DAY_DAYS", "520")),
-                candle_concurrency=int(os.getenv("ANGEL_CANDLE_CONCURRENCY", "15")),
-            )
-            logger.info("✅ Angel One live producer started (leader-lock enabled)")
-        except Exception as e:
-            # don't fail whole app if redis is down; you can still use /signals/once
-            logger.error(f"❌ Angel One producer start failed: {e}", exc_info=True)
+        # try:
+        #     live_server.start_background_producer(
+        #         refresh_sec=int(os.getenv("ANGEL_REFRESH_SEC", "5")),
+        #         stocklist_path=os.getenv("ANGEL_STOCKLIST_PATH", "routes/Angel_One/stockList.json"),
+        #         tokens_path=os.getenv("ANGEL_TOKENS_PATH", "tokens.json"),
+        #         interval_30m=os.getenv("ANGEL_INTERVAL_30M", "THIRTY_MINUTE"),
+        #         interval_day=os.getenv("ANGEL_INTERVAL_DAY", "ONE_DAY"),
+        #         lookback_days_30m=int(os.getenv("ANGEL_LOOKBACK_30M_DAYS", "60")),
+        #         lookback_days_day=int(os.getenv("ANGEL_LOOKBACK_DAY_DAYS", "520")),
+        #         candle_concurrency=int(os.getenv("ANGEL_CANDLE_CONCURRENCY", "15")),
+        #     )
+        #     logger.info("✅ Angel One live producer started (leader-lock enabled)")
+        # except Exception as e:
+        #     # don't fail whole app if redis is down; you can still use /signals/once
+        #     logger.error(f"❌ Angel One producer start failed: {e}", exc_info=True)
 
         logger.info("🎉 Startup complete.")
 
@@ -307,7 +314,7 @@ try:
     app.include_router(Indian_Stock_Exchange_Details.router, prefix="/api/v1")
 
     # ✅ Angel One Live (SSE)
-    app.include_router(live_server.router, prefix="/api/v1")
+    # app.include_router(live_server.router, prefix="/api/v1")
 
 except Exception as e:
     logger.error(f"Failed to register routes: {e}", exc_info=True)
