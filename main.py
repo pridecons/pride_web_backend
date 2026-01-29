@@ -50,8 +50,8 @@ from routes.Mutual_Fund import Home_Mf
 from routes.SEO import Seo_Keyword
 
 # Angel One Market Movement (LIVE)
-# from routes.Angel_One import live_server  # includes router + start_background_producer
-# from routes.Angel_One.angel_login import login_and_get_token  
+from routes.Angel_One import live_server  # includes router + start_background_producer
+from routes.Angel_One.angel_login import login_and_get_token  
 
 
 logging.basicConfig(
@@ -197,7 +197,7 @@ async def lifespan(app: FastAPI):
             scheduler.add_job(_bhavcopy_job, "interval", minutes=10)
 
         # login_and_get_token()  # one-time at startup
-        # scheduler.add_job(login_and_get_token, "interval", hours=6)
+        scheduler.add_job(login_and_get_token, "interval", hours=6)
 
         scheduler.start()
         logger.info("✅ Scheduler started")
@@ -205,21 +205,24 @@ async def lifespan(app: FastAPI):
         # ✅ ANGEL ONE LIVE PRODUCER (multi-worker safe)
         # Only ONE worker becomes leader and publishes snapshots to Redis;
         # All workers can serve SSE and all clients see identical snapshots.
-        # try:
-        #     live_server.start_background_producer(
-        #         refresh_sec=int(os.getenv("ANGEL_REFRESH_SEC", "5")),
-        #         stocklist_path=os.getenv("ANGEL_STOCKLIST_PATH", "routes/Angel_One/stockList.json"),
-        #         tokens_path=os.getenv("ANGEL_TOKENS_PATH", "tokens.json"),
-        #         interval_30m=os.getenv("ANGEL_INTERVAL_30M", "THIRTY_MINUTE"),
-        #         interval_day=os.getenv("ANGEL_INTERVAL_DAY", "ONE_DAY"),
-        #         lookback_days_30m=int(os.getenv("ANGEL_LOOKBACK_30M_DAYS", "60")),
-        #         lookback_days_day=int(os.getenv("ANGEL_LOOKBACK_DAY_DAYS", "520")),
-        #         candle_concurrency=int(os.getenv("ANGEL_CANDLE_CONCURRENCY", "15")),
-        #     )
-        #     logger.info("✅ Angel One live producer started (leader-lock enabled)")
-        # except Exception as e:
-        #     # don't fail whole app if redis is down; you can still use /signals/once
-        #     logger.error(f"❌ Angel One producer start failed: {e}", exc_info=True)
+        try:
+            live_server.start_background_producer(
+                fast_refresh_sec=2,     # ✅ live LTP updates fast
+                heavy_refresh_sec=60,   # ✅ indicators refresh
+                stocklist_path="routes/Angel_One/stockList.json",
+                tokens_path="tokens.json",
+                interval_30m="THIRTY_MINUTE",
+                interval_day="ONE_DAY",
+                lookback_days_30m=60,
+                lookback_days_day=520,
+                quote_chunk_size=50,
+                quote_sleep_s=0.2,
+                candle_concurrency=15,
+            )
+            logger.info("✅ Angel One live producer started (leader-lock enabled)")
+        except Exception as e:
+            # don't fail whole app if redis is down; you can still use /signals/once
+            logger.error(f"❌ Angel One producer start failed: {e}", exc_info=True)
 
         logger.info("🎉 Startup complete.")
 
@@ -314,7 +317,7 @@ try:
     app.include_router(Indian_Stock_Exchange_Details.router, prefix="/api/v1")
 
     # ✅ Angel One Live (SSE)
-    # app.include_router(live_server.router, prefix="/api/v1")
+    app.include_router(live_server.router, prefix="/api/v1")
 
 except Exception as e:
     logger.error(f"Failed to register routes: {e}", exc_info=True)

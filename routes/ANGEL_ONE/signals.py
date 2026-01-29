@@ -132,6 +132,23 @@ def candles_to_df(candle_resp: Dict[str, Any]) -> Optional[pd.DataFrame]:
 
 
 def score_signal(quote_row: Dict[str, Any], ind: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Decision logic:
+    - Price vs EMA20 (trend)
+    - RSI14 (momentum)
+    - Volume > 0 (activity)
+    - BuyQty vs SellQty (order book bias)
+
+    Returns:
+      {
+        score: int,
+        signal: "BUY" | "SELL" | "WAIT",
+        summary: str,
+        reasons: [str, ...],
+        checks: {...}
+      }
+    """
+
     ltp = quote_row.get("ltp")
     ema20 = ind.get("ema20")
     rsi14 = ind.get("rsi14")
@@ -140,29 +157,115 @@ def score_signal(quote_row: Dict[str, Any], ind: Dict[str, Any]) -> Dict[str, An
     sell_qty = quote_row.get("totSellQuan")
 
     score = 0
+    reasons: List[str] = []
 
+    # ------------------------
+    # 1) Trend: LTP vs EMA20
+    # ------------------------
+    trend_ok = None
     if ltp is not None and ema20 is not None:
-        score += 2 if float(ltp) > float(ema20) else -2
-
-    if rsi14 is not None:
-        if float(rsi14) > 60:
+        trend_ok = float(ltp) > float(ema20)
+        if trend_ok:
             score += 2
-        elif float(rsi14) < 40:
+            reasons.append(f"Trend bullish: LTP ({float(ltp):.2f}) > EMA20 ({float(ema20):.2f}) [+2]")
+        else:
             score -= 2
+            reasons.append(f"Trend bearish: LTP ({float(ltp):.2f}) < EMA20 ({float(ema20):.2f}) [-2]")
+    else:
+        reasons.append("Trend check skipped: Missing LTP/EMA20 [0]")
 
-    if vol is not None and float(vol) > 0:
-        score += 1
+    # ------------------------
+    # 2) Momentum: RSI14
+    # ------------------------
+    rsi_state = None
+    if rsi14 is not None:
+        r = float(rsi14)
+        if r > 60:
+            score += 2
+            rsi_state = "strong"
+            reasons.append(f"Momentum strong: RSI14 ({r:.2f}) > 60 [+2]")
+        elif r < 40:
+            score -= 2
+            rsi_state = "weak"
+            reasons.append(f"Momentum weak: RSI14 ({r:.2f}) < 40 [-2]")
+        else:
+            rsi_state = "neutral"
+            reasons.append(f"Momentum neutral: RSI14 ({r:.2f}) in 40–60 [0]")
+    else:
+        reasons.append("Momentum check skipped: Missing RSI14 [0]")
 
+    # ------------------------
+    # 3) Activity: Volume
+    # ------------------------
+    vol_ok = None
+    if vol is not None:
+        vol_ok = float(vol) > 0
+        if vol_ok:
+            score += 1
+            reasons.append(f"Liquidity present: Volume ({float(vol):.0f}) > 0 [+1]")
+        else:
+            reasons.append("Low activity: Volume is 0 [0]")
+    else:
+        reasons.append("Volume check skipped: Missing tradeVolume [0]")
+
+    # ------------------------
+    # 4) Order flow: BuyQty vs SellQty
+    # ------------------------
+    flow_state = None
     if buy_qty is not None and sell_qty is not None:
-        score += 1 if float(buy_qty) > float(sell_qty) else -1
+        b = float(buy_qty)
+        s = float(sell_qty)
+        if b > s:
+            score += 1
+            flow_state = "buy-dominant"
+            reasons.append(f"Order flow bullish: BuyQty ({b:.0f}) > SellQty ({s:.0f}) [+1]")
+        elif b < s:
+            score -= 1
+            flow_state = "sell-dominant"
+            reasons.append(f"Order flow bearish: BuyQty ({b:.0f}) < SellQty ({s:.0f}) [-1]")
+        else:
+            flow_state = "balanced"
+            reasons.append("Order flow balanced: BuyQty == SellQty [0]")
+    else:
+        reasons.append("Order flow check skipped: Missing totBuyQuan/totSellQuan [0]")
 
+    # ------------------------
+    # Final signal
+    # ------------------------
     signal = "WAIT"
     if score >= 3:
         signal = "BUY"
     elif score <= -3:
         signal = "SELL"
 
-    return {"score": score, "signal": signal}
+    # summary text
+    if signal == "BUY":
+        summary = "BUY because trend + momentum are supportive and confirmations are positive."
+    elif signal == "SELL":
+        summary = "SELL because trend + momentum are weak and confirmations are negative."
+    else:
+        summary = "WAIT because signals are mixed/neutral; better to wait for confirmation."
+
+    checks = {
+        "ltp": ltp,
+        "ema20": ema20,
+        "rsi14": rsi14,
+        "tradeVolume": vol,
+        "totBuyQuan": buy_qty,
+        "totSellQuan": sell_qty,
+        "trend_ok": trend_ok,
+        "rsi_state": rsi_state,
+        "vol_ok": vol_ok,
+        "flow_state": flow_state,
+    }
+
+    return {
+        "score": score,
+        "signal": signal,
+        "summary": summary,
+        "reasons": reasons,
+        "checks": checks,
+    }
 
 
 def main(
