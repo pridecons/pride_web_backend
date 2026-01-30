@@ -73,38 +73,27 @@ async def fetch_articles(query_terms: List[str]) -> list[dict]:
     )]
 
 budget_terms = [
-    # Budget Day / speech / documents
-    "Union Budget", "Budget 2026", "Budget 2026-27",
-    "Budget Speech", "Budget Highlights", "Budget Live",
-    "Finance Bill", "Budget Announcement", "Budget Press Conference",
-    "Economic Survey",
+    # Must-have broad hooks
+    "budget", "union budget", "interim budget", "budget speech",
+    "budget highlights", "budget live", "economic survey",
 
-    # Key people / institutions
-    "Finance Minister", "Nirmala Sitharaman",
-    "RBI reaction to budget", "SEBI budget impact",
+    # Key people/institutions
+    "finance minister", "nirmala sitharaman", "rbi",
 
-    # Direct tax (most searched on budget day)
-    "income tax slabs", "new tax regime", "old tax regime",
-    "standard deduction", "tax rebate", "capital gains tax",
-    "LTCG", "STCG", "STT",
+    # Direct tax (budget day staples)
+    "income tax", "income tax slab", "new tax regime", "old tax regime",
+    "standard deduction", "tax rebate", "capital gains tax", "LTCG", "STCG", "STT",
 
     # Indirect tax / duties
-    "GST changes", "customs duty", "import duty",
+    "GST", "customs duty", "import duty",
 
-    # Fiscal / macro / borrowing (headline heavy)
-    "fiscal deficit", "capital expenditure", "capex",
-    "government borrowing", "bond yields",
+    # Fiscal / capex (headline heavy)
+    "fiscal deficit", "capex", "capital expenditure",
 
-    # Sector headlines (budget day favorites)
-    "railway budget", "infrastructure spending", "defence budget",
-    "affordable housing", "MSME support", "startup incentives",
-    "agriculture allocation", "PLI scheme", "renewable energy",
-
-    # Hindi (high-signal)
-    "केंद्रीय बजट", "बजट भाषण", "बजट हाइलाइट्स",
-    "आर्थिक सर्वेक्षण", "आयकर स्लैब", "नया टैक्स रेजीम",
-    "कैपेक्स", "राजकोषीय घाटा"
+    # Hindi (minimal but effective)
+    "बजट", "केंद्रीय बजट", "आयकर स्लैब", "नया टैक्स रेजीम", "जीएसटी"
 ]
+
 
 # ─── FastAPI Endpoint ──────────────────────────────────────────
 @router.get("/news/home", tags=["Articles"])
