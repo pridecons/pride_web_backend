@@ -73,64 +73,38 @@ async def fetch_articles(query_terms: List[str]) -> list[dict]:
     )]
 
 budget_terms = [
-    # Core budget keywords
-    "union budget", "budget day", "budget 2026", "budget 2026-27",
-    "interim budget", "finance bill", "appropriation bill",
-    "budget speech", "budget highlights", "budget announcements",
-    "budget live", "budget press conference",
-    "finance ministry budget", "ministry of finance budget",
-    "economic survey", "economic survey india",
+    # Budget Day / speech / documents
+    "Union Budget", "Budget 2026", "Budget 2026-27",
+    "Budget Speech", "Budget Highlights", "Budget Live",
+    "Finance Bill", "Budget Announcement", "Budget Press Conference",
+    "Economic Survey",
 
-    # People / institutions
-    "finance minister", "nirmala sitharaman", "budget by finance minister",
-    "rbi reaction budget", "sebi budget impact",
+    # Key people / institutions
+    "Finance Minister", "Nirmala Sitharaman",
+    "RBI reaction to budget", "SEBI budget impact",
 
-    # Macro / fiscal
-    "fiscal deficit", "revenue deficit", "primary deficit",
-    "gross fiscal deficit", "fiscal consolidation",
-    "capex", "capital expenditure", "government capex",
-    "infra spending", "budget allocation", "budget outlay",
-    "subsidy", "fertilizer subsidy", "food subsidy", "fuel subsidy",
-    "disinvestment", "privatization", "psu divestment",
-    "borrowing plan", "g-sec", "bond yields", "government borrowing",
+    # Direct tax (most searched on budget day)
+    "income tax slabs", "new tax regime", "old tax regime",
+    "standard deduction", "tax rebate", "capital gains tax",
+    "LTCG", "STCG", "STT",
 
-    # Tax (direct + indirect)
-    "income tax budget", "income tax slab", "new tax regime", "old tax regime",
-    "tax rebate", "standard deduction", "surcharge", "cess",
-    "tds", "tcs", "tax compliance",
-    "gst budget", "gst rate change", "gst council",
-    "customs duty", "import duty", "excise duty",
+    # Indirect tax / duties
+    "GST changes", "customs duty", "import duty",
 
-    # Markets / trading impact
-    "budget impact on stock market", "budget impact on nifty", "sensex budget reaction",
-    "market rally budget", "market volatility budget",
-    "capital gains tax", "ltcg", "stcg", "securities transaction tax", "stt",
-    "dividend tax", "buyback tax",
+    # Fiscal / macro / borrowing (headline heavy)
+    "fiscal deficit", "capital expenditure", "capex",
+    "government borrowing", "bond yields",
 
-    # Sectors commonly affected
-    "infrastructure budget", "railways budget", "roads highways budget",
-    "defence budget", "psu banks budget", "banking budget", "nbfc budget",
-    "real estate budget", "housing budget", "affordable housing budget",
-    "healthcare budget", "pharma budget", "education budget",
-    "agriculture budget", "msme budget", "startup budget",
-    "manufacturing budget", "make in india budget", "pli scheme budget",
-    "renewable energy budget", "solar budget", "green energy budget",
-    "electric vehicle budget", "ev subsidy budget",
-    "semiconductor budget", "chip manufacturing budget",
-    "telecom budget", "it services budget",
+    # Sector headlines (budget day favorites)
+    "railway budget", "infrastructure spending", "defence budget",
+    "affordable housing", "MSME support", "startup incentives",
+    "agriculture allocation", "PLI scheme", "renewable energy",
 
-    # India-specific schemes & signals
-    "pmay budget", "mgnrega budget", "nrega allocation",
-    "msp budget", "farm credit budget", "rural spending budget",
-    "inflation outlook budget", "growth projection budget",
-
-    # Hindi keywords (helps if lang includes hin)
-    "केंद्रीय बजट", "यूनियन बजट", "बजट भाषण", "बजट हाइलाइट्स",
-    "आर्थिक सर्वेक्षण", "वित्त मंत्री", "आयकर", "इनकम टैक्स स्लैब",
-    "नया टैक्स रेजीम", "जीएसटी", "राजकोषीय घाटा", "पूंजीगत व्यय",
-    "डिसइन्वेस्टमेंट", "कैपेक्स", "कैपिटल गेन टैक्स"
+    # Hindi (high-signal)
+    "केंद्रीय बजट", "बजट भाषण", "बजट हाइलाइट्स",
+    "आर्थिक सर्वेक्षण", "आयकर स्लैब", "नया टैक्स रेजीम",
+    "कैपेक्स", "राजकोषीय घाटा"
 ]
-
 
 # ─── FastAPI Endpoint ──────────────────────────────────────────
 @router.get("/news/home", tags=["Articles"])
@@ -146,7 +120,7 @@ async def get_news_home(background_tasks: BackgroundTasks):
         "equity", "foreign investment", "stock sector"
     ]
 
-    articles = await fetch_articles(query_terms)
+    articles = await fetch_articles(budget_terms)
 
     background_tasks.add_task(_write_cache, articles)
 
