@@ -39,6 +39,8 @@ ANGEL_CLIENT_PIN=2580
 
 LIVE_DATA_FETCH = os.getenv("LIVE_DATA_FETCH", "false").strip().lower() in ("1", "true", "yes", "y", "on")
 
+GROK_API_KEY=os.getenv("GROK_API_KEY")
+
 class Settings(BaseSettings):
     # SFTP configuration
     # SFTP_HOSTS: list[str] = ['snapshotsftp1.nseindia.com', 'snapshotsftp2.nseindia.com']

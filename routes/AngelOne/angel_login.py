@@ -91,5 +91,5 @@ def login_and_get_token() -> dict:
     save_tokens(tokens, "tokens.json")
     return tokens
 
-# if __name__ == "__main__":
-#     login_and_get_token()
+if __name__ == "__main__":
+    login_and_get_token()

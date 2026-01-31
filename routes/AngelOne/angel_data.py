@@ -6,6 +6,7 @@ import time
 import random
 import requests
 from typing import Dict, Any, List, Optional
+import os
 
 from routes.AngelOne.angel_login import login_and_get_token  # must refresh tokens.json
 from config import ANGEL_API_KEY
@@ -50,12 +51,6 @@ class TokenManager:
         self._cache = None
         return self.get_jwt()
 
-    def save(self, data: Dict[str, Any]) -> None:
-        with open(self.tokens_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        self._cache = data
-
-
 # ---------------------------
 # base helpers
 # ---------------------------
@@ -85,14 +80,17 @@ def get_mac_address() -> str:
 
 
 def build_headers(jwt_token: str) -> Dict[str, str]:
+    public_ip = "182.70.246.103"
+    local_ip = "182.70.246.103"
+
     return {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Authorization": f"Bearer {jwt_token}",
         "X-UserType": "USER",
         "X-SourceID": "WEB",
-        "X-ClientLocalIP": get_local_ip(),
-        "X-ClientPublicIP": "1.1.1.1",
+        "X-ClientLocalIP": local_ip,
+        "X-ClientPublicIP": public_ip,
         "X-MACAddress": get_mac_address(),
         "X-PrivateKey": ANGEL_API_KEY,
     }

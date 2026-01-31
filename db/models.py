@@ -696,3 +696,34 @@ class SEOKeyword(Base):
         Index("ix_seo_keyword_symbol", "symbol"),
     )
 
+
+class GrokRecommendation(Base):
+    __tablename__ = "grok_recommendation"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    trade_date = Column(Date, nullable=False, index=True)     # ✅ same day check
+    exchange    = Column(String(10), nullable=False)
+    token       = Column(String(32), nullable=False)
+
+    symbol      = Column(String(64), nullable=True)
+    name        = Column(String(128), nullable=True)
+    tradingsymbol = Column(String(64), nullable=True)
+    category    = Column(String(64), nullable=True)
+
+    score       = Column(Integer, nullable=True)
+    signal      = Column(String(10), nullable=True)
+
+    quote_full  = Column(JSONB, nullable=True)                # full quote snapshot
+    indicators  = Column(JSONB, nullable=True)                # {30m:..., day:...}
+    local_plan  = Column(JSONB, nullable=True)                # entry/sl/targets (your calc)
+    grok_plan   = Column(JSONB, nullable=True)                # grok output JSON
+    news        = Column(JSONB, nullable=True)                # optional
+
+    created_at  = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("trade_date", "exchange", "token", name="uq_grok_reco_day_ex_tok"),
+    )
+
