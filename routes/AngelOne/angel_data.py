@@ -80,8 +80,8 @@ def get_mac_address() -> str:
 
 
 def build_headers(jwt_token: str) -> Dict[str, str]:
-    public_ip = "182.70.246.103"
-    local_ip = "182.70.246.103"
+    public_ip = "72.61.233.119"
+    local_ip = "72.61.233.119"
 
     return {
         "Content-Type": "application/json",
