@@ -10,6 +10,9 @@ import os
 
 from routes.AngelOne.angel_login import login_and_get_token  # must refresh tokens.json
 from config import ANGEL_API_KEY
+import logging
+
+logger = logging.getLogger(__name__)
 
 QUOTE_URL = "https://apiconnect.angelbroking.com/rest/secure/angelbroking/market/v1/quote/"
 CANDLE_URL = "https://apiconnect.angelbroking.com/rest/secure/angelbroking/historical/v1/getCandleData"
@@ -48,7 +51,7 @@ class TokenManager:
         #     self._cache = None
         #     raise RuntimeError(f"Angel login refresh failed: {e}")
 
-        self._cache = None
+        # self._cache = None
         return self.get_jwt()
 
 # ---------------------------
@@ -97,6 +100,11 @@ def build_headers(jwt_token: str) -> Dict[str, str]:
     # ✅ set these in systemd
     public_ip = os.getenv("ANGEL_PUBLIC_IP", "").strip()
     local_ip  = os.getenv("ANGEL_LOCAL_IP", "").strip()
+
+    logger.info(
+    f"[ANGEL][HDR] local_ip={local_ip} public_ip={public_ip}"
+    )
+
 
     # fallback
     if not local_ip:
@@ -152,6 +160,12 @@ def _post_json(
 
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        if not r.ok:
+            logger.error(
+                f"[ANGEL][HTTP] {r.status_code} url={url} "
+                f"hdr_pub={headers.get('X-ClientPublicIP')} hdr_loc={headers.get('X-ClientLocalIP')} "
+                f"resp={r.text[:300]}"
+            )
         # if token expired, often 401/403
         if auto_refresh and r.status_code in (401, 403):
             token_mgr.refresh_and_reload()
