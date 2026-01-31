@@ -38,9 +38,15 @@ class TokenManager:
 
     def refresh_and_reload(self) -> str:
         """
-        Calls login flow that should update tokens.json, then reloads cache.
+        ✅ Actually re-login and write fresh tokens.json, then reload cache.
         """
-        # login_and_get_token()  # assumed to write tokens.json
+        # try:
+        #     login_and_get_token()  # ✅ MUST: writes new tokens.json
+        # except Exception as e:
+        #     # if login fails, keep old cache cleared so next call tries again
+        #     self._cache = None
+        #     raise RuntimeError(f"Angel login refresh failed: {e}")
+
         self._cache = None
         return self.get_jwt()
 
