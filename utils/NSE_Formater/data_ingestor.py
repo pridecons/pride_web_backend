@@ -5,13 +5,17 @@ import csv
 import io
 import gzip
 import tempfile
-from datetime import datetime, date
+import json
+import redis
+from datetime import datetime, date, timezone
 from typing import List, Dict, Any, Optional
 from zoneinfo import ZoneInfo  # Python 3.9+
-from db.models import NseIngestionLog
+
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from db.connection import SessionLocal
+from db.models import NseIngestionLog
 from db.models import (
     NseCmIntraday1Min,
     NseCmIndex1Min,
@@ -21,12 +25,108 @@ from db.models import (
 from sftp.NSE.sftp_client import SFTPClient
 from utils.NSE_Formater.parser import parse_mkt, parse_ind
 from utils.NSE_Formater.security_format import SecuritiesConverter
-from datetime import timezone
+from sqlalchemy.sql import expression
 
 IST = ZoneInfo("Asia/Kolkata")
 
 # Prices in snapshots (mkt / ind) are in paise -> divide by 100
 PRICE_SCALE = 100.0
+
+# ======================================================================
+#  REDIS (LIVE CACHE + PUBSUB)
+# ======================================================================
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+LIVE_TTL_SECONDS = int(os.getenv("LIVE_TTL_SECONDS", "21600"))  # 6 hours default
+LIVE_PUBLISH = os.getenv("LIVE_PUBLISH", "true").lower() in ("1", "true", "yes", "y")
+
+def get_redis() -> redis.Redis:
+    # decode_responses=True -> str in/out (easy for hash + JSON)
+    return redis.Redis.from_url(REDIS_URL, decode_responses=True)
+
+def _hset_mapping_str(pipe, key: str, payload: Dict[str, Any]):
+    # Redis hash mapping requires string/bytes/int/float; we convert None -> ""
+    mapping = {k: ("" if v is None else str(v)) for k, v in payload.items()}
+    pipe.hset(key, mapping=mapping)
+
+def publish_latest_quotes_by_symbol(
+    db: Session,
+    trade_date: date,
+    seq: int,
+    bars: List[NseCmIntraday1Min],
+) -> None:
+    """
+    Publish only the LATEST snapshot per token from this file to Redis,
+    but keyed & broadcast by SYMBOL (not token_id).
+
+    - Cache key: live:cm:symbol:<SYMBOL>
+    - PubSub channel: pub:cm:symbol:<SYMBOL>
+    Payload contains token_id + symbol + ltp/bid/ask/ts etc.
+    """
+    if not LIVE_PUBLISH or not bars:
+        return
+
+    # 1) de-dupe: last bar per token wins (reduces flood)
+    latest_by_token: dict[int, NseCmIntraday1Min] = {}
+    for b in bars:
+        if b is None:
+            continue
+        # only publish if we have a meaningful last_price
+        if b.last_price is None:
+            continue
+        latest_by_token[int(b.token_id)] = b
+
+    if not latest_by_token:
+        return
+
+    token_ids = list(latest_by_token.keys())
+
+    # 2) map token_id -> symbol (from DB master)
+    #    NOTE: stub securities may have symbol=str(token_id) until security master runs.
+    rows = (
+        db.query(NseCmSecurity.token_id, NseCmSecurity.symbol)
+        .filter(NseCmSecurity.token_id.in_(token_ids))
+        .all()
+    )
+    token_to_symbol = {int(t): (s or str(t)).upper() for (t, s) in rows}
+
+    # 3) push to redis: cache hash + publish json
+    rds = get_redis()
+    pipe = rds.pipeline(transaction=False)
+
+    for token_id, b in latest_by_token.items():
+        sym = token_to_symbol.get(token_id, str(token_id)).upper()
+
+        payload = {
+            "symbol": sym,
+            "token_id": token_id,
+            "ltp": float(b.last_price) if b.last_price is not None else None,
+            "bid": float(b.best_bid_price) if b.best_bid_price is not None else None,
+            "ask": float(b.best_ask_price) if b.best_ask_price is not None else None,
+            "bid_qty": int(b.best_bid_qty) if b.best_bid_qty is not None else None,
+            "ask_qty": int(b.best_ask_qty) if b.best_ask_qty is not None else None,
+            "volume": int(b.volume) if b.volume is not None else None,
+            "avg": float(b.avg_price) if b.avg_price is not None else None,
+            "o": float(b.open_price) if b.open_price is not None else None,
+            "h": float(b.high_price) if b.high_price is not None else None,
+            "l": float(b.low_price) if b.low_price is not None else None,
+            "c": float(b.close_price) if b.close_price is not None else None,
+            "indicative_close": float(b.indicative_close_price) if b.indicative_close_price is not None else None,
+            "ts": b.interval_start.isoformat(),
+            "trade_date": str(trade_date),
+            "seq": seq,
+        }
+
+        cache_key = f"live:cm:symbol:{sym}"
+        channel = f"pub:cm:symbol:{sym}"
+
+        _hset_mapping_str(pipe, cache_key, payload)
+        pipe.expire(cache_key, LIVE_TTL_SECONDS)
+
+        # publish compact JSON
+        pipe.publish(channel, json.dumps(payload, separators=(",", ":")))
+
+    pipe.execute()
 
 
 # ======================================================================
@@ -408,7 +508,7 @@ def process_cm30_mkt_folder(remote_dir: str) -> None:
                 db.bulk_save_objects(new_secs)
 
             # Insert intraday bars (no duplicate protection here; file-level log prevents duplicates)
-            bars = []
+            bars: List[NseCmIntraday1Min] = []
             for r in records:
                 ts_ist = datetime.fromtimestamp(int(r["timestamp"]), tz=timezone.utc).astimezone(IST)
 
@@ -457,6 +557,13 @@ def process_cm30_mkt_folder(remote_dir: str) -> None:
             done_seqs.add(seq)
             processed += 1
             print(f"[CM30-MKT] ✅ Committed data for {file_name}")
+
+            # ✅ LIVE: publish latest by SYMBOL to Redis (cache + pubsub)
+            try:
+                publish_latest_quotes_by_symbol(db=db, trade_date=trade_date, seq=seq, bars=bars)
+            except Exception as e:
+                # do not break ingestion on redis issues
+                print(f"[CM30-MKT] ⚠️ LIVE publish failed for seq={seq}: {e}")
 
         print(f"[CM30-MKT] Done folder {remote_dir} | processed={processed}, skipped={skipped}")
 
@@ -701,7 +808,6 @@ def process_cm30_security_for_date(trade_date: date) -> None:
             db.commit()
 
         for i, rec in enumerate(securities, start=1):
-            print("i :: ", i)
             try:
                 token_id = int(rec["token_number"])
             except (KeyError, ValueError, TypeError):
