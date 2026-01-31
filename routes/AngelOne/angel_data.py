@@ -79,9 +79,31 @@ def get_mac_address() -> str:
     return ":".join(f"{(mac >> ele) & 0xff:02X}" for ele in range(40, -8, -8))
 
 
+import os
+import socket
+
+def _detect_local_ip() -> str:
+    # best-effort local ip (no external calls)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
 def build_headers(jwt_token: str) -> Dict[str, str]:
-    public_ip = "72.61.233.119"
-    local_ip = "72.61.233.119"
+    # ✅ set these in systemd
+    public_ip = os.getenv("ANGEL_PUBLIC_IP", "").strip()
+    local_ip  = os.getenv("ANGEL_LOCAL_IP", "").strip()
+
+    # fallback
+    if not local_ip:
+        local_ip = _detect_local_ip()
+    if not public_ip:
+        # many setups use same public/local ip for broker headers
+        public_ip = local_ip
 
     return {
         "Content-Type": "application/json",
