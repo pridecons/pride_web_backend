@@ -45,8 +45,8 @@ def login_and_get_token() -> dict:
     totp = get_totp(ANGEL_TOTP_KEY)
     print("current_otp :", totp)
 
-    client_public_ip = "72.61.233.119"  # optional
-    client_local_ip = "72.61.233.119"
+    client_public_ip = "1.1.1.1"  # optional
+    client_local_ip = get_local_ip()
     mac_addr = get_mac_address()
 
     headers = {
