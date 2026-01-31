@@ -208,7 +208,7 @@ async def lifespan(app: FastAPI):
         try:
             live_server.start_background_producer(
                 fast_refresh_sec=2,     # ✅ live LTP updates fast
-                heavy_refresh_sec=60,   # ✅ indicators refresh
+                heavy_refresh_sec=900,   # ✅ indicators refresh
                 stocklist_path="routes/AngelOne/stockList.json",
                 tokens_path="tokens.json",
                 interval_30m="THIRTY_MINUTE",
@@ -216,7 +216,7 @@ async def lifespan(app: FastAPI):
                 lookback_days_30m=60,
                 lookback_days_day=520,
                 quote_chunk_size=50,
-                quote_sleep_s=0.2,
+                quote_sleep_s=0.5,
                 candle_concurrency=15,
             )
             logger.info("✅ Angel One live producer started (leader-lock enabled)")
