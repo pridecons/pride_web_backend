@@ -10,9 +10,6 @@ import os
 
 from routes.AngelOne.angel_login import login_and_get_token  # must refresh tokens.json
 from config import ANGEL_API_KEY
-import logging
-
-logger = logging.getLogger(__name__)
 
 QUOTE_URL = "https://apiconnect.angelbroking.com/rest/secure/angelbroking/market/v1/quote/"
 CANDLE_URL = "https://apiconnect.angelbroking.com/rest/secure/angelbroking/historical/v1/getCandleData"
@@ -51,7 +48,7 @@ class TokenManager:
         #     self._cache = None
         #     raise RuntimeError(f"Angel login refresh failed: {e}")
 
-        # self._cache = None
+        self._cache = None
         return self.get_jwt()
 
 # ---------------------------
@@ -82,36 +79,9 @@ def get_mac_address() -> str:
     return ":".join(f"{(mac >> ele) & 0xff:02X}" for ele in range(40, -8, -8))
 
 
-import os
-import socket
-
-def _detect_local_ip() -> str:
-    # best-effort local ip (no external calls)
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
 def build_headers(jwt_token: str) -> Dict[str, str]:
-    # ✅ set these in systemd
-    public_ip = os.getenv("ANGEL_PUBLIC_IP", "").strip()
-    local_ip  = os.getenv("ANGEL_LOCAL_IP", "").strip()
-
-    logger.info(
-    f"[ANGEL][HDR] local_ip={local_ip} public_ip={public_ip}"
-    )
-
-
-    # fallback
-    if not local_ip:
-        local_ip = _detect_local_ip()
-    if not public_ip:
-        # many setups use same public/local ip for broker headers
-        public_ip = local_ip
+    public_ip = "182.70.246.103"
+    local_ip = "182.70.246.103"
 
     return {
         "Content-Type": "application/json",
@@ -160,12 +130,6 @@ def _post_json(
 
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=timeout)
-        if not r.ok:
-            logger.error(
-                f"[ANGEL][HTTP] {r.status_code} url={url} "
-                f"hdr_pub={headers.get('X-ClientPublicIP')} hdr_loc={headers.get('X-ClientLocalIP')} "
-                f"resp={r.text[:300]}"
-            )
         # if token expired, often 401/403
         if auto_refresh and r.status_code in (401, 403):
             token_mgr.refresh_and_reload()

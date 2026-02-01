@@ -30,9 +30,7 @@ from routes.AngelOne.angel_data import quote_full_bulk
 
 from db.connection import SessionLocal  # <-- change if your file name is different
 from db.models import GrokRecommendation  # <-- change to your actual model import
-import logging
 
-logger = logging.getLogger(__name__)
 # ✅ Optional realtime channel for Grok SSE (store in DB only; publish only for streaming)
 GROK_PUBSUB_CH = "angel:grok:pubsub"
 
@@ -329,8 +327,6 @@ def start_background_producer(
                         min_candles_day=20,
                     )
                     items = (res.get("items") or [])
-                    logger.info(f"[AngelProducer][HEAVY] starting heavy run for {len(items)} stocks")
-
                     await write_indicators_cache(r, items)
                     print(f"[AngelProducer] ✅ heavy({tag}) refreshed at {datetime.now().isoformat()} items={len(items)}")
             except Exception as e:

@@ -8,9 +8,7 @@ import pandas as pd
 
 from routes.AngelOne.angel_data import load_json, quote_full_bulk, get_candles
 from routes.AngelOne.indicators import compute_indicators
-import logging
 
-logger = logging.getLogger(__name__)
 
 def save_json(path: str, data: Any) -> None:
     with open(path, "w", encoding="utf-8") as f:
@@ -105,10 +103,6 @@ def parse_quote_map(quote_resp: Dict[str, Any]) -> Dict[Tuple[str, str], Dict[st
 
 
 def candles_to_df(candle_resp: Dict[str, Any]) -> Optional[pd.DataFrame]:
-    if not candle_resp or not candle_resp.get("status"):
-        logger.warning(f"[SIGNALS] candle_resp invalid status={candle_resp.get('status') if candle_resp else None}")
-        return None
-
     if not candle_resp or not candle_resp.get("status"):
         return None
 
