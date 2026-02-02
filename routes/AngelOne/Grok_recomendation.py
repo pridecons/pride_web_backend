@@ -103,7 +103,7 @@ def generate_trade_plan_with_grok(
         ],
     }
 
-    r = requests.post(GROK_URL, headers=GROK_HEADERS, json=payload, timeout=timeout_sec)
+    r = requests.post(GROK_URL, headers=GROK_HEADERS, json=payload, timeout=(10, 300))
     r.raise_for_status()
     data = r.json()
 
