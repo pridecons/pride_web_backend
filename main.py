@@ -27,7 +27,7 @@ from utils.NSE_Formater.data_ingestor import process_cm30_for_date, process_cm30
 from utils.NSE_Formater.bhavcopy_ingestor import process_cm_bhavcopy_for_date
 
 from routes.NSE import Top_Marqee, Todays_Stock, Market_And_Sectors, Preopen_Movers, Most_Traded, Historical_data
-from routes.Cloude_Data import corporateAction, faoOiParticipant, fiidiiTrade, resultCalendar, ipo
+from routes.Cloude_Data import corporateAction, faoOiParticipant, fiidiiTrade, resultCalendar, ipo, earnometer
 from routes.Cloude_Data.News import news
 from routes.static_proxy import static_proxy
 
@@ -302,16 +302,20 @@ try:
     app.include_router(Historical_data.router, prefix="/api/v1")
     app.include_router(static_proxy.router, prefix="/api/v1")
     app.include_router(news.router, prefix="/api/v1")
-    app.include_router(ipo.router, prefix="/api/v1")
-    app.include_router(resultCalendar.router, prefix="/api/v1")
-    app.include_router(fiidiiTrade.router, prefix="/api/v1")
-    app.include_router(corporateAction.router, prefix="/api/v1")
-    app.include_router(faoOiParticipant.router, prefix="/api/v1")
     app.include_router(Most_Traded.router, prefix="/api/v1")
     app.include_router(Preopen_Movers.router, prefix="/api/v1")
     app.include_router(Market_And_Sectors.router, prefix="/api/v1")
     app.include_router(Todays_Stock.router, prefix="/api/v1")
     app.include_router(Top_Marqee.router, prefix="/api/v1")
+
+    #cloude data
+    app.include_router(earnometer.router, prefix="/api/v1")
+    app.include_router(ipo.router, prefix="/api/v1")
+    app.include_router(resultCalendar.router, prefix="/api/v1")
+    app.include_router(fiidiiTrade.router, prefix="/api/v1")
+    app.include_router(corporateAction.router, prefix="/api/v1")
+    app.include_router(faoOiParticipant.router, prefix="/api/v1")
+    
 
     # NSE Detail Data
     app.include_router(Indian_Stock_Exchange_Details.router, prefix="/api/v1")
