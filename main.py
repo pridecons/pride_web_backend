@@ -53,6 +53,9 @@ from routes.SEO import Seo_Keyword
 from routes.AngelOne import live_server  # includes router + start_background_producer
 from routes.AngelOne.angel_login import login_and_get_token  
 
+#crm
+from routes.Web import PaymentToken
+
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -279,6 +282,9 @@ def health_check():
 # Register routers
 # -------------------------------
 try:
+    #CRM
+    app.include_router(PaymentToken.router, prefix="/api/v1")
+
     # SEO
     app.include_router(Seo_Keyword.router, prefix="/api/v1")
 
