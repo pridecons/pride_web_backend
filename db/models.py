@@ -279,6 +279,12 @@ class NseCmIntraday1Min(Base):
             f"{self.trade_date} {self.interval_start}>"
         )
 
+class PaymentToken(Base, TimestampMixin):
+    __tablename__ = "payment_token"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(30), unique=True, nullable=False)
+    jwt_token = Column(String(255), unique=True, nullable=False)
 
 # ============================================================
 # 4) INTRADAY INDICES – 1 MIN (*.ind.gz)
