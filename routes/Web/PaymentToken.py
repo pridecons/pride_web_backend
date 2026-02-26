@@ -18,7 +18,7 @@ router = APIRouter(prefix="/payment-token", tags=["PaymentToken"])
 
 # -------------------- Schemas --------------------
 class PaymentTokenCreate(BaseModel):
-    jwt_token: str = Field(..., min_length=1, max_length=255)
+    jwt_token: str = Field(...)
 
 class PaymentTokenOut(BaseModel):
     id: int
