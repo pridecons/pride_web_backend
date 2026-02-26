@@ -284,7 +284,7 @@ class PaymentToken(Base, TimestampMixin):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     code = Column(String(30), unique=True, nullable=False)
-    jwt_token = Column(String(255), unique=True, nullable=False)
+    jwt_token = Column(Text, unique=True, nullable=False)
 
 # ============================================================
 # 4) INTRADAY INDICES – 1 MIN (*.ind.gz)
